@@ -1149,7 +1149,7 @@ class EnterpriseBankUI(ctk.CTk):
                 target_header_frame.grid(row=2, column=0, sticky="ew", pady=(10, 5))
                 manage_btn.pack(side="right")
                 target_entry.grid(row=3, column=0, sticky="w", pady=(0, 15))
-                target_entry.configure(placeholder_text="Select, type Account #, or @Username")
+                target_entry.set("Select, type Account #, or @Username")
                 cat_label.grid(row=4, column=0, sticky="w", pady=(10,5))
                 cat_sel.grid(row=5, column=0, sticky="w", pady=(0, 15))
             elif self.txn_type_var.get() == "Withdraw":

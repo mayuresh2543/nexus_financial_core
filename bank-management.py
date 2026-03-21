@@ -8,13 +8,12 @@ from datetime import datetime, timedelta
 import re
 import csv
 from fpdf import FPDF
-import math
 
 # ==========================================
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v14.db"):
+    def __init__(self, db_name="enterprise_bank_v15.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -124,10 +123,18 @@ class BankCore:
         if not self.cursor.fetchone():
             salt = secrets.token_hex(16)
             hashed_pin = self.hash_data("0000", salt)
+
             self.cursor.execute('''
                 INSERT INTO users (username, pin_hash, salt, first_name, last_name, email, phone, role, credit_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', ("admin", hashed_pin, salt, "System", "Administrator", "admin@nexus.core", "0000000000", "admin", 850))
+
+            admin_id = self.cursor.lastrowid
+
+            # FIX: Ensure Admin has a checking account for P2P routing
+            acc_num = random.randint(10000000, 99999999)
+            self.cursor.execute("INSERT INTO accounts (account_number, user_id, account_type, balance) VALUES (?, ?, ?, ?)",
+                                (acc_num, admin_id, "Checking", 0.0))
             self.conn.commit()
 
     def hash_data(self, pin, salt):
@@ -198,13 +205,13 @@ class BankCore:
         if result: return f"{result[0]} {result[1][0]}."
         return None
 
-    # --- NEW: @Username Resolution ---
     def resolve_username(self, username):
         clean_user = username.replace("@", "").strip()
+        # FIX: Case-insensitive SQL matching
         self.cursor.execute('''
             SELECT a.account_number, u.first_name, u.last_name
             FROM accounts a JOIN users u ON a.user_id = u.user_id
-            WHERE u.username = ? AND a.account_type = 'Checking'
+            WHERE LOWER(u.username) = LOWER(?) AND a.account_type = 'Checking'
         ''', (clean_user,))
         result = self.cursor.fetchone()
         if result:
@@ -270,7 +277,7 @@ class BankCore:
         ''', (account_number,))
         return self.cursor.fetchall()
 
-    # --- Vaults ---
+    # --- Vaults (Visual Savings) ---
     def get_vaults(self, user_id):
         self.cursor.execute("SELECT vault_id, name, target_amount, current_amount, status FROM vaults WHERE user_id=?", (user_id,))
         return self.cursor.fetchall()
@@ -315,7 +322,7 @@ class BankCore:
             self.conn.rollback()
             return False, str(e)
 
-    # --- Credit Engine ---
+    # --- Credit Engine (Dynamic Pricing) ---
     def get_dynamic_rate(self, user_id):
         score = self.get_credit_score(user_id)
         if score >= 750: return 0.055
@@ -508,7 +515,6 @@ class BankCore:
 
             processed = 0
             for u_id, l_id in loans:
-                # Attempt EMI deduction
                 self.cursor.execute("SELECT emi_amount, balance_remaining FROM loans WHERE loan_id=?", (l_id,))
                 emi, rem_bal = self.cursor.fetchone()
 
@@ -527,7 +533,7 @@ class BankCore:
                     else:
                         self.cursor.execute("UPDATE loans SET balance_remaining = ? WHERE loan_id=?", (new_rem_bal, l_id))
 
-                    self.update_credit_score(u_id, 2) # Small auto-pay reward
+                    self.update_credit_score(u_id, 2)
                     processed += 1
 
             self.conn.commit()
@@ -730,10 +736,8 @@ class EnterpriseBankUI(ctk.CTk):
         create_metric_card(metric_frame, "Global Reserves", f"₹{total_funds if total_funds else 0.0:,.2f}", "#2ecc71")
         create_metric_card(metric_frame, "Total Active Accounts", str(total_accs), "#DCE4EE")
 
-        # Time Simulator
         control_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         control_frame.pack(fill="x", pady=30, ipadx=15, ipady=15)
-
         ctk.CTkLabel(control_frame, text="Backend Automation Simulator", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 5))
         ctk.CTkLabel(control_frame, text="Run the end-of-month batch processor to autonomously collect pending EMIs from user accounts.", text_color="gray").pack(anchor="w", padx=10, pady=(0, 15))
 
@@ -889,7 +893,7 @@ class EnterpriseBankUI(ctk.CTk):
             ("Savings Vaults", self.view_vaults),
             ("Wealth (FDs)", self.view_wealth),
             ("Credit Services", self.view_credit),
-            ("Analytics (PFM)", self.view_analytics), # UPDATED TO PFM
+            ("Analytics (PFM)", self.view_analytics),
             ("Statements", self.view_history),
             ("Preferences", self.view_settings)
         ]
@@ -1080,10 +1084,8 @@ class EnterpriseBankUI(ctk.CTk):
 
         bens = self.backend.get_beneficiaries(self.active_user_data["id"])
         ben_list = ["-- New Manual Transfer --"] + [f"{b[0]} ({b[1]})" for b in bens]
-        # P2P UPGRADE: Swapped Combo for Entry to allow @username search natively
         target_entry = ctk.CTkComboBox(fields_frame, values=ben_list, width=400, height=40)
 
-        # CATEGORY UPGRADE
         cat_label = ctk.CTkLabel(fields_frame, text="Spending Category", font=ctk.CTkFont(weight="bold"))
         self.cat_var = ctk.StringVar(value="General")
         cat_sel = ctk.CTkOptionMenu(fields_frame, values=["General", "Housing", "Food & Dining", "Entertainment", "Utilities"], variable=self.cat_var, width=400, height=40)
@@ -1179,7 +1181,6 @@ class EnterpriseBankUI(ctk.CTk):
 
                 if txn_type == "Transfer":
                     tgt_val = target_entry.get()
-                    # Resolution Engine (P2P vs Numeric)
                     if tgt_val.startswith("@"):
                         tgt_id, name = self.backend.resolve_username(tgt_val)
                         if not tgt_id: raise ValueError(f"Username {tgt_val} not found.")
@@ -1188,7 +1189,7 @@ class EnterpriseBankUI(ctk.CTk):
                         if not tgt_val.isdigit(): raise ValueError("Invalid Destination ID.")
                         tgt_id = int(tgt_val)
                         if not self.backend.verify_account(tgt_id): raise ValueError("Target account does not exist.")
-                    elif tgt_val == "-- New Manual Transfer --" or tgt_val == "":
+                    elif tgt_val == "-- New Manual Transfer --" or tgt_val == "" or tgt_val == "Select, type Account #, or @Username":
                         raise ValueError("Please select or enter a destination.")
                     else:
                         if not tgt_val.isdigit(): raise ValueError("Destination must be numeric or @username.")
@@ -1426,7 +1427,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(app_frame, text="Submit Application", font=ctk.CTkFont(weight="bold"), height=40, width=250, command=submit_application).pack(anchor="w", padx=10, pady=(30, 0))
 
-    # --- UPGRADED VIEW: Personal Finance Manager (PFM) ---
     def view_analytics(self):
         container = self.set_content("PFM: Spending Analytics")
         self.analytics_acc_var = ctk.StringVar(value=list(self.active_accounts.keys())[0])
@@ -1445,8 +1445,6 @@ class EnterpriseBankUI(ctk.CTk):
     def _render_chart(self):
         self.canvas.delete("all")
         acc_id = self.active_accounts[self.analytics_acc_var.get()]["id"]
-
-        # PFM: Fetch spending grouped by category
         spending_data = self.backend.get_spending_by_category(acc_id)
 
         c_width, c_height = self.canvas.winfo_width(), self.canvas.winfo_height()
@@ -1458,13 +1456,11 @@ class EnterpriseBankUI(ctk.CTk):
 
         total_spent = sum(amt for cat, amt in spending_data)
 
-        # Donut Chart Math
         colors = ["#e74c3c", "#3498db", "#f1c40f", "#9b59b6", "#2ecc71", "#e67e22", "#1abc9c"]
         start_angle = 90
         cx, cy = c_width / 2, c_height / 2
         radius = min(cx, cy) * 0.7
 
-        # Draw Arcs
         legend_x = 20
         legend_y = 20
         for i, (cat, amt) in enumerate(spending_data):
@@ -1473,21 +1469,16 @@ class EnterpriseBankUI(ctk.CTk):
             self.canvas.create_arc(cx - radius, cy - radius, cx + radius, cy + radius, start=start_angle, extent=extent, fill=color, outline=color, width=2)
             start_angle += extent
 
-            # Draw Legend
             self.canvas.create_rectangle(legend_x, legend_y, legend_x+15, legend_y+15, fill=color, outline=color)
             pct = (amt / total_spent) * 100
             self.canvas.create_text(legend_x+25, legend_y+7, text=f"{cat}: {pct:.1f}% (₹{amt:,.0f})", fill="gray", anchor="w", font=("Arial", 11, "bold"))
             legend_y += 30
 
-        # Draw Center Hole (Donut effect)
         bg_color = "#1e1e1e" if ctk.get_appearance_mode() == "Dark" else "#dce4ee"
         inner_radius = radius * 0.6
         self.canvas.create_oval(cx - inner_radius, cy - inner_radius, cx + inner_radius, cy + inner_radius, fill=bg_color, outline=bg_color)
-
-        # Center Text
         self.canvas.create_text(cx, cy - 10, text="Total Spent", fill="gray", font=("Arial", 12))
         self.canvas.create_text(cx, cy + 15, text=f"₹{total_spent:,.0f}", fill="white" if ctk.get_appearance_mode() == "Dark" else "black", font=("Arial", 18, "bold"))
-
 
     def view_history(self):
         container = self.set_content("Account Statements")

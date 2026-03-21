@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from tkinter import filedialog, simpledialog
+from tkinter import filedialog
 import sqlite3
 import random
 import hashlib
@@ -171,7 +171,6 @@ class BankCore:
         return self.cursor.fetchone()[0]
 
     def update_credit_score(self, user_id, points):
-        """Gamification Engine: Bounds the score between 300 and 850."""
         current = self.get_credit_score(user_id)
         new_score = max(300, min(850, current + points))
         self.cursor.execute("UPDATE users SET credit_score=? WHERE user_id=?", (new_score, user_id))
@@ -199,7 +198,7 @@ class BankCore:
             self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (sender_acc,))
             sender_bal = self.cursor.fetchone()[0]
 
-            if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment'] and sender_bal < amount:
+            if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'Vault Funding'] and sender_bal < amount:
                 raise ValueError("Insufficient Funds")
 
             new_sender_bal = sender_bal - amount if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation', 'Vault Funding'] else sender_bal + amount
@@ -257,7 +256,7 @@ class BankCore:
 
             if action == "fund":
                 if chk_bal < amount: raise ValueError("Insufficient funds in Checking.")
-                if cur + amount > tgt: amount = tgt - cur # Cap at target
+                if cur + amount > tgt: amount = tgt - cur
 
                 new_chk = chk_bal - amount
                 new_vault = cur + amount
@@ -318,7 +317,7 @@ class BankCore:
                                 (chk_acc, 'Loan Disbursement', principal, new_bal))
 
             self.conn.commit()
-            self.update_credit_score(user_id, -10) # Hard inquiry penalty
+            self.update_credit_score(user_id, -10)
             return True, "Loan approved. Credit score impacted."
         except Exception as e:
             self.conn.rollback()
@@ -352,7 +351,7 @@ class BankCore:
                 self.cursor.execute("UPDATE loans SET balance_remaining = ? WHERE loan_id=?", (new_rem_bal, loan_id))
 
             self.conn.commit()
-            self.update_credit_score(user_id, 5) # Gamification reward
+            self.update_credit_score(user_id, 5)
             return True, "EMI Payment Successful. Credit score improved."
         except Exception as e:
             self.conn.rollback()
@@ -393,7 +392,7 @@ class BankCore:
             self.cursor.execute("INSERT INTO fixed_deposits (user_id, linked_account, principal, interest_rate, duration_months, maturity_date) VALUES (?, ?, ?, ?, ?, ?)",
                                 (user_id, source_acc, amount, rate, months, mat_date))
             self.conn.commit()
-            self.update_credit_score(user_id, 2) # Financial responsibility reward
+            self.update_credit_score(user_id, 2)
             return True, "Fixed Deposit securely locked."
         except Exception as e:
             self.conn.rollback()
@@ -703,7 +702,7 @@ class EnterpriseBankUI(ctk.CTk):
         for widget in self.content_area.winfo_children(): widget.destroy()
         u_info = self.backend.get_user_details(target_uid)
         if not u_info: return
-        usr, fn, ln, em, ph, stat, c_score, created = u_info # Adjusted for credit score
+        usr, fn, ln, em, ph, stat, c_score, created = u_info
 
         header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
@@ -775,7 +774,7 @@ class EnterpriseBankUI(ctk.CTk):
             ("Dashboard", self.view_dashboard),
             ("Operations", self.view_transfers),
             ("Cards", self.view_cards),
-            ("Savings Vaults", self.view_vaults), # NEW VISUAL FEATURE
+            ("Savings Vaults", self.view_vaults),
             ("Wealth (FDs)", self.view_wealth),
             ("Credit Services", self.view_credit),
             ("Analytics", self.view_analytics),
@@ -829,7 +828,6 @@ class EnterpriseBankUI(ctk.CTk):
         create_metric_card(metric_frame, "Total Assets", f"₹{total_bal:,.2f}", "#2ecc71")
         create_metric_card(metric_frame, "Active Accounts", str(len(self.active_accounts)), "#DCE4EE")
 
-        # Credit Score Gauge
         s_color = "#2ecc71" if score >= 750 else "#f1c40f" if score >= 650 else "#e74c3c"
         create_metric_card(metric_frame, "Credit Score", str(score), s_color)
 
@@ -841,7 +839,6 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- NEW VISUAL VIEW: Savings Vaults ---
     def view_vaults(self):
         container = self.set_content("Savings Vaults")
         container.grid_rowconfigure(0, weight=1)
@@ -855,14 +852,42 @@ class EnterpriseBankUI(ctk.CTk):
         if not vaults:
             ctk.CTkLabel(scroll, text="You have no active Savings Vaults.", text_color="gray").pack(pady=30)
         else:
-            def manage_v(v_id, action):
-                amt = simpledialog.askfloat("Manage Vault", f"Enter amount to {action}:")
-                if amt and amt > 0:
-                    success, msg = self.backend.manage_vault(self.active_user_data["id"], v_id, amt, action)
-                    if success:
-                        self.show_toast(msg, "success")
-                        self.view_vaults()
-                    else: self.show_toast(msg, "error")
+            def manage_v(v_id, action, current_amt, target_amt):
+                modal = ctk.CTkToplevel(self)
+                modal.title(f"{action.capitalize()} Vault")
+                modal.geometry("400x250")
+                modal.resizable(False, False)
+                modal.attributes("-topmost", True)
+                modal.grab_set()
+
+                ctk.CTkLabel(modal, text=f"{action.capitalize()} Funds", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 5))
+
+                if action == "fund": helper = f"Remaining to goal: ₹{target_amt - current_amt:,.2f}"
+                else: helper = f"Available to withdraw: ₹{current_amt:,.2f}"
+
+                ctk.CTkLabel(modal, text=helper, text_color="gray").pack(pady=(0, 15))
+
+                amt_entry = ctk.CTkEntry(modal, placeholder_text="Enter Amount (₹)", width=250, height=40)
+                amt_entry.pack(pady=10)
+                amt_entry.focus()
+
+                def execute():
+                    try:
+                        amt = float(amt_entry.get())
+                        if amt <= 0: raise ValueError
+
+                        success, msg = self.backend.manage_vault(self.active_user_data["id"], v_id, amt, action)
+                        if success:
+                            self.show_toast(msg, "success")
+                            modal.destroy()
+                            self.view_vaults()
+                        else:
+                            self.show_toast(msg, "error")
+                    except ValueError:
+                        self.show_toast("Please enter a valid numerical amount.", "error")
+
+                btn_color = "#2ecc71" if action == "fund" else "#e74c3c"
+                ctk.CTkButton(modal, text=f"Confirm {action.capitalize()}", height=40, width=250, fg_color=btn_color, command=execute).pack(pady=10)
 
             for v in vaults:
                 v_id, name, tgt, cur, stat = v
@@ -887,13 +912,12 @@ class EnterpriseBankUI(ctk.CTk):
                 controls.pack(fill="x")
 
                 if stat == 'active':
-                    ctk.CTkButton(controls, text="Add Funds", width=100, command=lambda x=v_id: manage_v(x, "fund")).pack(side="left", padx=(0,10))
+                    ctk.CTkButton(controls, text="Add Funds", width=100, command=lambda x=v_id, c=cur, t=tgt: manage_v(x, "fund", c, t)).pack(side="left", padx=(0,10))
                 else:
                     ctk.CTkLabel(controls, text="Goal Reached! 🎉", text_color="#f1c40f", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(0,10))
 
-                ctk.CTkButton(controls, text="Withdraw", width=100, fg_color="transparent", border_width=1, command=lambda x=v_id: manage_v(x, "withdraw")).pack(side="right")
+                ctk.CTkButton(controls, text="Withdraw", width=100, fg_color="transparent", border_width=1, command=lambda x=v_id, c=cur, t=tgt: manage_v(x, "withdraw", c, t)).pack(side="right")
 
-        # Creation Form
         create_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         create_frame.grid(row=1, column=0, sticky="ew", ipadx=15, ipady=15)
 
@@ -1182,7 +1206,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(app_frame, text="Lock Deposit", font=ctk.CTkFont(weight="bold"), height=40, width=250, fg_color="#2ecc71", command=submit_fd).pack(anchor="w", padx=10, pady=(30, 0))
 
-    # --- UPGRADED VIEW: Credit Services (Dynamic Gamified Rates) ---
     def view_credit(self):
         container = self.set_content("Credit Services")
         container.grid_rowconfigure(1, weight=1)
@@ -1214,9 +1237,7 @@ class EnterpriseBankUI(ctk.CTk):
                 ctk.CTkLabel(scroll, text=f"₹{rem:,.2f}").grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
                 ctk.CTkButton(scroll, text="Pay EMI", width=80, command=lambda x=l_id: process_payment(x)).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
 
-        # Dynamic Rate Check
         u_rate = self.backend.get_dynamic_rate(self.active_user_data["id"])
-
         app_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         app_frame.grid(row=1, column=0, sticky="nsew", ipadx=15, ipady=15)
 
@@ -1235,7 +1256,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         preview_label = ctk.CTkLabel(form_grid, text="Estimated EMI: ₹0.00 / month", font=ctk.CTkFont(size=16, weight="bold"), text_color="#3498db")
         preview_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(20, 5))
-
         color = "#2ecc71" if u_rate <= 0.085 else "#e74c3c"
         ctk.CTkLabel(form_grid, text=f"Your Custom Dynamic Rate (APR): {u_rate * 100}%", text_color=color).grid(row=3, column=0, columnspan=2, sticky="w")
 

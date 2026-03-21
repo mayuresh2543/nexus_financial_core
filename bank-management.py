@@ -10,13 +10,14 @@ import csv
 from fpdf import FPDF
 
 # ==========================================
-# Core Backend: Advanced Verification & RBAC
+# Core Backend: Advanced Verification & Credit Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v8.db"):
+    def __init__(self, db_name="enterprise_bank_v9.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
+        self.annual_interest_rate = 0.085  # 8.5% Fixed APR for all loans
         self._initialize_schema()
 
     def _initialize_schema(self):
@@ -56,6 +57,18 @@ class BankCore:
                 user_id INTEGER,
                 nickname TEXT NOT NULL,
                 target_account INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
+            CREATE TABLE IF NOT EXISTS loans (
+                loan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                principal REAL NOT NULL,
+                interest_rate REAL NOT NULL,
+                tenure_months INTEGER NOT NULL,
+                emi_amount REAL NOT NULL,
+                balance_remaining REAL NOT NULL,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
         ''')
@@ -130,10 +143,10 @@ class BankCore:
             self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (sender_acc,))
             sender_bal = self.cursor.fetchone()[0]
 
-            if txn_type in ['Withdrawal', 'Transfer'] and sender_bal < amount:
+            if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment'] and sender_bal < amount:
                 raise ValueError("Insufficient Funds")
 
-            new_sender_bal = sender_bal - amount if txn_type in ['Withdrawal', 'Transfer'] else sender_bal + amount
+            new_sender_bal = sender_bal - amount if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment'] else sender_bal + amount
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_sender_bal, sender_acc))
             self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
                                 (sender_acc, txn_type, amount, new_sender_bal, receiver_acc))
@@ -167,6 +180,82 @@ class BankCore:
         self.cursor.execute("INSERT INTO beneficiaries (user_id, nickname, target_account) VALUES (?, ?, ?)", (user_id, nickname, target_account))
         self.conn.commit()
 
+    # --- Credit & Loan Engine ---
+    def calculate_emi(self, principal, tenure_months):
+        """Calculates EMI using standard amortization formula."""
+        r_monthly = self.annual_interest_rate / 12
+        emi = principal * r_monthly * ((1 + r_monthly) ** tenure_months) / (((1 + r_monthly) ** tenure_months) - 1)
+        return round(emi, 2)
+
+    def apply_for_loan(self, user_id, principal, tenure_months):
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            emi = self.calculate_emi(principal, tenure_months)
+            total_payable = emi * tenure_months
+
+            # Find user's checking account to disburse funds
+            self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
+            chk_data = self.cursor.fetchone()
+            if not chk_data: raise ValueError("Requires a Checking account to receive funds.")
+            chk_acc, chk_bal = chk_data
+
+            # 1. Create the loan record
+            self.cursor.execute('''
+                INSERT INTO loans (user_id, principal, interest_rate, tenure_months, emi_amount, balance_remaining)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, principal, self.annual_interest_rate, tenure_months, emi, total_payable))
+
+            # 2. Disburse funds to checking
+            new_bal = chk_bal + principal
+            self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, chk_acc))
+            self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)",
+                                (chk_acc, 'Loan Disbursement', principal, new_bal))
+
+            self.conn.commit()
+            return True, "Loan approved and funds disbursed."
+        except Exception as e:
+            self.conn.rollback()
+            return False, str(e)
+
+    def get_active_loans(self, user_id):
+        self.cursor.execute("SELECT loan_id, principal, interest_rate, tenure_months, emi_amount, balance_remaining, created_at FROM loans WHERE user_id=? AND status='active'", (user_id,))
+        return self.cursor.fetchall()
+
+    def process_emi(self, user_id, loan_id):
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+
+            # Get loan details
+            self.cursor.execute("SELECT emi_amount, balance_remaining FROM loans WHERE loan_id=? AND status='active'", (loan_id,))
+            loan_data = self.cursor.fetchone()
+            if not loan_data: raise ValueError("Loan not found or already paid off.")
+            emi, rem_bal = loan_data
+
+            # Get Checking account for deduction
+            self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
+            chk_acc, chk_bal = self.cursor.fetchone()
+
+            if chk_bal < emi: raise ValueError("Insufficient funds in Checking for EMI payment.")
+
+            # Deduct from checking
+            new_chk_bal = chk_bal - emi
+            self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_chk_bal, chk_acc))
+            self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
+                                (chk_acc, 'EMI Payment', emi, new_chk_bal, loan_id))
+
+            # Update loan balance
+            new_rem_bal = round(rem_bal - emi, 2)
+            if new_rem_bal <= 0.05: # Float math safety buffer
+                self.cursor.execute("UPDATE loans SET balance_remaining = 0, status = 'paid' WHERE loan_id=?", (loan_id,))
+            else:
+                self.cursor.execute("UPDATE loans SET balance_remaining = ? WHERE loan_id=?", (new_rem_bal, loan_id))
+
+            self.conn.commit()
+            return True, "EMI Payment Successful."
+        except Exception as e:
+            self.conn.rollback()
+            return False, str(e)
+
     # --- Admin Logic ---
     def get_global_metrics(self):
         self.cursor.execute("SELECT COUNT(*), SUM(balance) FROM accounts")
@@ -195,7 +284,6 @@ class BankCore:
         return self.cursor.fetchall()
 
     def get_all_users_with_balances(self):
-        """Fetches all users alongside their total calculated balance for the CSV report."""
         self.cursor.execute('''
             SELECT u.user_id, u.first_name, u.last_name, u.email, u.status, COALESCE(SUM(a.balance), 0)
             FROM users u
@@ -204,6 +292,7 @@ class BankCore:
             GROUP BY u.user_id
         ''')
         return self.cursor.fetchall()
+
 
 # ==========================================
 # Frontend Architecture & UI
@@ -434,7 +523,6 @@ class EnterpriseBankUI(ctk.CTk):
     def view_admin_users(self):
         container = self.set_admin_content("Customer Directory")
 
-        # Export CSV Button
         controls_frame = ctk.CTkFrame(container, fg_color="transparent")
         controls_frame.pack(fill="x", pady=(0, 10))
 
@@ -442,11 +530,9 @@ class EnterpriseBankUI(ctk.CTk):
                       fg_color="#2ecc71", hover_color="#27ae60", width=150).pack(side="right")
 
         users = self.backend.get_all_users()
-
         list_frame = ctk.CTkScrollableFrame(container)
         list_frame.pack(fill="both", expand=True)
 
-        # FIX 1: Changed "ID" to "#" for visual clarity
         headers = ["#", "Name", "Email Address", "Status", "Actions"]
         for i, h in enumerate(headers):
             ctk.CTkLabel(list_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
@@ -454,7 +540,6 @@ class EnterpriseBankUI(ctk.CTk):
         def toggle_status(uid, current_status):
             new_stat = "frozen" if current_status == "active" else "active"
             self.backend.toggle_user_status(uid, new_stat)
-            # Removed the raw ID from the toast to keep it clean
             self.show_toast(f"Account is now {new_stat}.", "info")
             self.view_admin_users()
 
@@ -464,7 +549,6 @@ class EnterpriseBankUI(ctk.CTk):
             btn_txt = "Freeze" if stat == "active" else "Unfreeze"
             btn_col = "#e74c3c" if stat == "active" else "#2ecc71"
 
-            # FIX 2: Replaced str(uid) with str(r+1) so the list always starts at 1
             ctk.CTkLabel(list_frame, text=str(r+1)).grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(list_frame, text=f"{fn} {ln}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(list_frame, text=em, text_color="gray").grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
@@ -478,32 +562,22 @@ class EnterpriseBankUI(ctk.CTk):
 
     def _export_admin_csv(self):
         report_data = self.backend.get_all_users_with_balances()
-        if not report_data:
-            self.show_toast("No user data available to export.", "error")
-            return
+        if not report_data: return self.show_toast("No user data available.", "error")
 
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            title="Save Admin Report As",
-            initialfile=f"Nexus_Global_Report_{datetime.now().strftime('%Y%m%d')}.csv"
-        )
-
+        file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Save Admin Report As", initialfile=f"Nexus_Global_Report_{datetime.now().strftime('%Y%m%d')}.csv")
         if not file_path: return
 
         try:
             with open(file_path, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(["User ID", "First Name", "Last Name", "Email", "Account Status", "Total Assets (INR)"])
-                for row in report_data:
-                    writer.writerow(row)
+                for row in report_data: writer.writerow(row)
             self.show_toast("CSV Report successfully exported.", "success")
-        except Exception as e:
+        except Exception:
             self.show_toast("Failed to generate CSV.", "error")
 
     def view_admin_inspector(self, target_uid):
         for widget in self.content_area.winfo_children(): widget.destroy()
-
         u_info = self.backend.get_user_details(target_uid)
         if not u_info: return
         usr, fn, ln, em, ph, stat, created = u_info
@@ -563,6 +637,7 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(scroll, text=str(tgt) if tgt else "-", text_color="gray").grid(row=r+1, column=3, padx=10, pady=2, sticky="w")
             ctk.CTkLabel(scroll, text=f"{prefix}₹{amt:,.2f}", text_color=color, font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=4, padx=10, pady=2, sticky="w")
 
+
     # ==========================================
     # CUSTOMER INTERFACE
     # ==========================================
@@ -570,13 +645,14 @@ class EnterpriseBankUI(ctk.CTk):
         self.clear_screen()
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(7, weight=1)
+        self.sidebar.grid_rowconfigure(8, weight=1)
 
         ctk.CTkLabel(self.sidebar, text="NEXUS", font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").grid(row=0, column=0, padx=20, pady=(30, 30))
 
         nav_btns = [
             ("Dashboard", self.view_dashboard),
             ("Operations", self.view_transfers),
+            ("Credit Services", self.view_credit), # NEW LOAN TAB
             ("Analytics", self.view_analytics),
             ("Statements", self.view_history),
             ("Preferences", self.view_settings)
@@ -592,7 +668,7 @@ class EnterpriseBankUI(ctk.CTk):
             self.show_auth_screen()
             self.show_toast("Successfully logged out.", "info")
 
-        ctk.CTkButton(self.sidebar, text="Sign Out", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=8, column=0, padx=20, pady=20, sticky="ew")
+        ctk.CTkButton(self.sidebar, text="Sign Out", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=9, column=0, padx=20, pady=20, sticky="ew")
 
         self.content_area = ctk.CTkFrame(self, fg_color="transparent")
         self.content_area.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
@@ -694,24 +770,20 @@ class EnterpriseBankUI(ctk.CTk):
                 if not tgt.isdigit():
                     status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
                     return
-
                 existing_bens = [b[1] for b in self.backend.get_beneficiaries(self.active_user_data["id"])]
                 if int(tgt) in existing_bens:
                     status_label.configure(text="Account already exists in Address Book.", text_color="#e74c3c")
-                    nick_entry.configure(state="disabled")
-                    save_btn.configure(state="disabled")
+                    nick_entry.configure(state="disabled"); save_btn.configure(state="disabled")
                     return
 
                 name = self.backend.verify_account(int(tgt))
                 if name:
                     status_label.configure(text=f"Verified Owner: {name}", text_color="#2ecc71")
                     verified_name.set(name)
-                    nick_entry.configure(state="normal")
-                    save_btn.configure(state="normal")
+                    nick_entry.configure(state="normal"); save_btn.configure(state="normal")
                 else:
                     status_label.configure(text="Account not found in system.", text_color="#e74c3c")
-                    nick_entry.configure(state="disabled")
-                    save_btn.configure(state="disabled")
+                    nick_entry.configure(state="disabled"); save_btn.configure(state="disabled")
 
             ctk.CTkButton(modal, text="Verify Account", fg_color="transparent", border_width=1, command=verify).pack(pady=5)
 
@@ -761,18 +833,14 @@ class EnterpriseBankUI(ctk.CTk):
 
                 if txn_type == "Transfer":
                     tgt_val = target_combo.get()
-                    if "(" in tgt_val:
-                        tgt_val = tgt_val.split("(")[1].replace(")", "")
-                    elif tgt_val == "-- New Manual Transfer --":
-                        raise ValueError("Please select a beneficiary or add one via Manage Contacts.")
+                    if "(" in tgt_val: tgt_val = tgt_val.split("(")[1].replace(")", "")
+                    elif tgt_val == "-- New Manual Transfer --": raise ValueError("Please select a beneficiary or add one via Manage Contacts.")
 
                     if not tgt_val.isdigit(): raise ValueError("Destination must be a valid numeric ID.")
 
                     tgt_id = int(tgt_val)
                     if tgt_id == src_id: raise ValueError("Cannot route funds to originating account.")
-
-                    if not self.backend.verify_account(tgt_id):
-                        raise ValueError("Target account does not exist in the system.")
+                    if not self.backend.verify_account(tgt_id): raise ValueError("Target account does not exist in the system.")
 
                     success, msg = self.backend.process_transaction(src_id, amt, 'Transfer', tgt_id)
                 else:
@@ -792,9 +860,104 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
+    # --- NEW VIEW: Credit Services (Loans & EMI) ---
+    def view_credit(self):
+        container = self.set_content("Credit Services")
+        container.grid_rowconfigure(1, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+
+        # TOP HALF: Active Loans Ledger
+        ledger_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        ledger_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20), ipadx=15, ipady=15)
+
+        ctk.CTkLabel(ledger_frame, text="Active Credit Facilities", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 10))
+
+        loans = self.backend.get_active_loans(self.active_user_data["id"])
+
+        if not loans:
+            ctk.CTkLabel(ledger_frame, text="You currently have no active loans.", text_color="gray").pack(pady=10)
+        else:
+            scroll = ctk.CTkScrollableFrame(ledger_frame, fg_color="transparent", height=150)
+            scroll.pack(fill="x", expand=True)
+
+            headers = ["Loan ID", "Principal", "EMI (Mo.)", "Remaining Balance", "Action"]
+            for i, h in enumerate(headers):
+                ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=5, sticky="w")
+
+            def process_payment(loan_id):
+                success, msg = self.backend.process_emi(self.active_user_data["id"], loan_id)
+                if success:
+                    self.show_toast("EMI Payment Deducted Successfully.", "success")
+                    self.view_credit() # Refresh
+                else:
+                    self.show_toast(msg, "error")
+
+            for r, loan in enumerate(loans):
+                l_id, prin, rate, tenure, emi, rem, date = loan
+                ctk.CTkLabel(scroll, text=f"LN-{l_id}").grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"₹{prin:,.2f}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"₹{emi:,.2f}", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"₹{rem:,.2f}").grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
+                ctk.CTkButton(scroll, text="Pay EMI", width=80, command=lambda x=l_id: process_payment(x)).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+
+        # BOTTOM HALF: Application Form
+        app_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        app_frame.grid(row=1, column=0, sticky="nsew", ipadx=15, ipady=15)
+
+        ctk.CTkLabel(app_frame, text="New Loan Application", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 15))
+
+        form_grid = ctk.CTkFrame(app_frame, fg_color="transparent")
+        form_grid.pack(anchor="w", padx=10)
+
+        ctk.CTkLabel(form_grid, text="Desired Principal (₹):", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5))
+        amount_entry = ctk.CTkEntry(form_grid, placeholder_text="e.g., 50000", width=250, height=40)
+        amount_entry.grid(row=1, column=0, sticky="w", padx=(0, 20))
+
+        ctk.CTkLabel(form_grid, text="Tenure (Months):", font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, sticky="w", pady=(10, 5))
+        tenure_var = ctk.StringVar(value="12")
+        tenure_menu = ctk.CTkOptionMenu(form_grid, values=["12", "24", "36", "48", "60"], variable=tenure_var, width=150, height=40)
+        tenure_menu.grid(row=1, column=1, sticky="w")
+
+        preview_label = ctk.CTkLabel(form_grid, text="Estimated EMI: ₹0.00 / month", font=ctk.CTkFont(size=16, weight="bold"), text_color="#3498db")
+        preview_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(20, 5))
+
+        disclaimer_label = ctk.CTkLabel(form_grid, text=f"Fixed Annual Percentage Rate (APR): {self.backend.annual_interest_rate * 100}%", text_color="gray")
+        disclaimer_label.grid(row=3, column=0, columnspan=2, sticky="w")
+
+        # Dynamic Math Preview
+        def update_preview(*args):
+            try:
+                amt = float(amount_entry.get())
+                if amt > 0:
+                    emi = self.backend.calculate_emi(amt, int(tenure_var.get()))
+                    preview_label.configure(text=f"Estimated EMI: ₹{emi:,.2f} / month")
+                else:
+                    preview_label.configure(text="Estimated EMI: ₹0.00 / month")
+            except ValueError:
+                preview_label.configure(text="Estimated EMI: ₹0.00 / month")
+
+        amount_entry.bind("<KeyRelease>", update_preview)
+        tenure_var.trace_add("write", update_form_state)
+
+        def submit_application():
+            try:
+                amt = float(amount_entry.get())
+                if amt < 1000: raise ValueError("Minimum loan principal is ₹1,000.")
+
+                success, msg = self.backend.apply_for_loan(self.active_user_data["id"], amt, int(tenure_var.get()))
+                if success:
+                    self.show_toast(f"Approved! ₹{amt:,.2f} routed to Checking.", "success")
+                    self.view_credit() # Hard Refresh
+                else:
+                    self.show_toast(msg, "error")
+            except ValueError as e:
+                err_msg = str(e) if "could not convert" not in str(e) else "Please enter a valid numeric amount."
+                self.show_toast(err_msg, "error")
+
+        ctk.CTkButton(app_frame, text="Submit Application", font=ctk.CTkFont(weight="bold"), height=40, width=250, command=submit_application).pack(anchor="w", padx=10, pady=(30, 0))
+
     def view_analytics(self):
         container = self.set_content("Financial Trend Analysis")
-
         self.analytics_acc_var = ctk.StringVar(value=list(self.active_accounts.keys())[0])
         acc_selector = ctk.CTkSegmentedButton(container, values=list(self.active_accounts.keys()),
                                               variable=self.analytics_acc_var, command=self._trigger_render)
@@ -802,15 +965,12 @@ class EnterpriseBankUI(ctk.CTk):
 
         self.canvas_frame = ctk.CTkFrame(container, fg_color=("gray85", "#1e1e1e"), corner_radius=15)
         self.canvas_frame.pack(fill="both", expand=True, pady=10)
-
         bg_color = "#1e1e1e" if ctk.get_appearance_mode() == "Dark" else "#dce4ee"
         self.canvas = ctk.CTkCanvas(self.canvas_frame, bg=bg_color, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=20, pady=20)
-
         self.after(100, self._render_chart)
 
-    def _trigger_render(self, event=None):
-        self._render_chart()
+    def _trigger_render(self, event=None): self._render_chart()
 
     def _render_chart(self):
         self.canvas.delete("all")
@@ -819,7 +979,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         c_width, c_height = self.canvas.winfo_width(), self.canvas.winfo_height()
         if c_width < 50 or c_height < 50: return
-
         if not logs or len(logs) < 2:
             self.canvas.create_text(c_width/2, c_height/2, text="Awaiting further transaction data to generate trend models.", fill="gray", font=("Arial", 14))
             return
@@ -843,22 +1002,17 @@ class EnterpriseBankUI(ctk.CTk):
 
     def view_history(self):
         container = self.set_content("Account Statements")
-
         controls_frame = ctk.CTkFrame(container, fg_color="transparent")
         controls_frame.pack(fill="x", pady=(0, 10))
 
         self.current_history_acc = ctk.StringVar(value="Checking")
-
         def reset_and_render(*args):
-            self.history_offset = 0
-            self._render_ledger()
+            self.history_offset = 0; self._render_ledger()
 
-        acc_selector = ctk.CTkSegmentedButton(controls_frame, values=list(self.active_accounts.keys()),
-                                              variable=self.current_history_acc, command=reset_and_render)
+        acc_selector = ctk.CTkSegmentedButton(controls_frame, values=list(self.active_accounts.keys()), variable=self.current_history_acc, command=reset_and_render)
         acc_selector.pack(side="left")
 
-        ctk.CTkButton(controls_frame, text="Export PDF", command=self._generate_pdf,
-                      fg_color="#3498db", hover_color="#2980b9", width=120).pack(side="right")
+        ctk.CTkButton(controls_frame, text="Export PDF", command=self._generate_pdf, fg_color="#3498db", hover_color="#2980b9", width=120).pack(side="right")
 
         self.ledger_frame = ctk.CTkFrame(container)
         self.ledger_frame.pack(fill="both", expand=True)
@@ -873,10 +1027,8 @@ class EnterpriseBankUI(ctk.CTk):
 
         self.prev_btn = ctk.CTkButton(pag_frame, text="< Previous", width=100, command=lambda: change_page("prev"))
         self.prev_btn.pack(side="left")
-
         self.page_label = ctk.CTkLabel(pag_frame, text="Page 1")
         self.page_label.pack(side="left", padx=20)
-
         self.next_btn = ctk.CTkButton(pag_frame, text="Next >", width=100, command=lambda: change_page("next"))
         self.next_btn.pack(side="right")
 
@@ -884,28 +1036,22 @@ class EnterpriseBankUI(ctk.CTk):
 
     def _render_ledger(self):
         for widget in self.ledger_frame.winfo_children(): widget.destroy()
-
         acc_id = self.active_accounts[self.current_history_acc.get()]["id"]
         logs = self.backend.get_history(acc_id, limit=50, offset=self.history_offset)
 
-        if not logs:
-            display_start = 0
-        else:
-            display_start = self.history_offset + 1
-
+        display_start = 0 if not logs else self.history_offset + 1
         self.page_label.configure(text=f"Records {display_start} - {self.history_offset + len(logs)}")
         self.prev_btn.configure(state="normal" if self.history_offset > 0 else "disabled")
         self.next_btn.configure(state="normal" if len(logs) == 50 else "disabled")
 
         headers = ["Type", "Date/Time", "Target", "Amount", "Closing Balance"]
-        for i, h in enumerate(headers):
-            ctk.CTkLabel(self.ledger_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=20, pady=10, sticky="w")
+        for i, h in enumerate(headers): ctk.CTkLabel(self.ledger_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=20, pady=10, sticky="w")
 
         for r, txn in enumerate(logs):
             txn_type, amt, bal_after, target, ts = txn
             fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
-            color = "#e74c3c" if txn_type in ['Withdrawal', 'Transfer'] else "#2ecc71"
-            prefix = "-" if txn_type in ['Withdrawal', 'Transfer'] else "+"
+            color = "#e74c3c" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment'] else "#2ecc71"
+            prefix = "-" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment'] else "+"
 
             ctk.CTkLabel(self.ledger_frame, text=txn_type).grid(row=r+1, column=0, padx=20, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=fmt_date, text_color="gray").grid(row=r+1, column=1, padx=20, pady=5, sticky="w")
@@ -918,9 +1064,7 @@ class EnterpriseBankUI(ctk.CTk):
         acc_id = self.active_accounts[acc_type]["id"]
         logs = self.backend.get_history(acc_id, limit=500, offset=0)
 
-        if not logs:
-            self.show_toast("There are no transactions to export.", "error")
-            return
+        if not logs: return self.show_toast("There are no transactions to export.", "error")
 
         file_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")], title="Save Statement As", initialfile=f"Nexus_Statement_{acc_id}.pdf")
         if not file_path: return
@@ -949,13 +1093,13 @@ class EnterpriseBankUI(ctk.CTk):
             for txn in logs:
                 txn_type, amt, bal_after, target, ts = txn
                 fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
-                prefix = "-" if txn_type in ['Withdrawal', 'Transfer'] else "+"
+                prefix = "-" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment'] else "+"
 
                 pdf.cell(35, 10, fmt_date, 1); pdf.cell(30, 10, txn_type, 1); pdf.cell(40, 10, str(target) if target else "-", 1); pdf.cell(40, 10, f"{prefix}{amt:,.2f}", 1); pdf.cell(45, 10, f"{bal_after:,.2f}", 1); pdf.ln()
 
             pdf.output(file_path)
             self.show_toast("Statement successfully exported.", "success")
-        except Exception as e:
+        except Exception:
             self.show_toast("Failed to generate PDF.", "error")
 
     def view_settings(self):
@@ -969,12 +1113,7 @@ class EnterpriseBankUI(ctk.CTk):
         info_frame = ctk.CTkFrame(profile_card, fg_color="transparent")
         info_frame.pack(fill="x", padx=20, pady=10)
 
-        user_info = [
-            ("Full Name:", self.active_user_data['name']),
-            ("Email Address:", self.active_user_data['email']),
-            ("Registered Phone:", self.active_user_data['phone'])
-        ]
-
+        user_info = [("Full Name:", self.active_user_data['name']), ("Email Address:", self.active_user_data['email']), ("Registered Phone:", self.active_user_data['phone'])]
         for i, (label_txt, val_txt) in enumerate(user_info):
             ctk.CTkLabel(info_frame, text=label_txt, text_color="gray", width=120, anchor="w").grid(row=i, column=0, pady=5, sticky="w")
             ctk.CTkLabel(info_frame, text=val_txt, font=ctk.CTkFont(weight="bold")).grid(row=i, column=1, pady=5, sticky="w")

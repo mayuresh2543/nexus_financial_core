@@ -263,8 +263,8 @@ class EnterpriseBankUI(ctk.CTk):
 
             success, msg = self.backend.register_user(data)
             if success:
-                self.show_toast("Account created! Welcome to Nexus.", "success")
                 self.show_auth_screen()
+                self.show_toast("Account created! Welcome to Nexus.", "success")
             else:
                 self.show_toast(msg, "error")
 

@@ -12,7 +12,7 @@ from fpdf import FPDF
 # Core Backend: Advanced Verification & RBAC
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v7.db"):
+    def __init__(self, db_name="enterprise_bank_v8.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -172,12 +172,26 @@ class BankCore:
         return self.cursor.fetchone()
 
     def get_all_users(self):
-        self.cursor.execute("SELECT user_id, username, first_name, last_name, status FROM users WHERE role='customer'")
+        self.cursor.execute("SELECT user_id, username, first_name, last_name, email, status FROM users WHERE role='customer'")
         return self.cursor.fetchall()
 
     def toggle_user_status(self, user_id, new_status):
         self.cursor.execute("UPDATE users SET status=? WHERE user_id=?", (new_status, user_id))
         self.conn.commit()
+
+    def get_user_details(self, user_id):
+        self.cursor.execute("SELECT username, first_name, last_name, email, phone, status, created_at FROM users WHERE user_id=?", (user_id,))
+        return self.cursor.fetchone()
+
+    def get_all_user_transactions(self, user_id, limit=50):
+        self.cursor.execute('''
+            SELECT a.account_type, t.txn_type, t.amount, t.balance_after, t.target_account, t.timestamp
+            FROM transactions t
+            JOIN accounts a ON t.account_number = a.account_number
+            WHERE a.user_id = ?
+            ORDER BY t.timestamp DESC LIMIT ?
+        ''', (user_id, limit))
+        return self.cursor.fetchall()
 
 # ==========================================
 # Frontend Architecture & UI
@@ -230,36 +244,51 @@ class EnterpriseBankUI(ctk.CTk):
     def clear_screen(self):
         for widget in self.winfo_children(): widget.destroy()
 
-    # --- Auth ---
+    # --- Segregated Auth Portals ---
     def show_auth_screen(self):
         self.clear_screen()
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
         auth_frame.pack(expand=True, fill="both")
 
-        card = ctk.CTkFrame(auth_frame, width=400, corner_radius=15)
-        card.pack(expand=True, pady=100)
+        card = ctk.CTkFrame(auth_frame, width=450, corner_radius=15)
+        card.pack(expand=True, pady=80, ipadx=20)
 
         ctk.CTkLabel(card, text="NEXUS", font=ctk.CTkFont(size=32, weight="bold"), text_color="#3498db").pack(pady=(40, 5))
-        ctk.CTkLabel(card, text="Secure System Access", text_color="gray").pack(pady=(0, 30))
 
-        user_entry = ctk.CTkEntry(card, placeholder_text="Username", width=280, height=40)
+        self.auth_mode_var = ctk.StringVar(value="Customer Access")
+        mode_selector = ctk.CTkSegmentedButton(card, values=["Customer Access", "Staff Portal"], variable=self.auth_mode_var, width=300)
+        mode_selector.pack(pady=(15, 20))
+
+        user_entry = ctk.CTkEntry(card, placeholder_text="Username", width=300, height=40)
         user_entry.pack(pady=10)
-        pin_entry = ctk.CTkEntry(card, placeholder_text="Secure PIN", show="*", width=280, height=40)
+        pin_entry = ctk.CTkEntry(card, placeholder_text="Secure PIN", show="*", width=300, height=40)
         pin_entry.pack(pady=10)
 
         def login():
+            mode = self.auth_mode_var.get()
             user = self.backend.authenticate(user_entry.get().strip(), pin_entry.get().strip())
+
             if user == "FROZEN":
                 self.show_toast("Account frozen. Contact support.", "error")
                 return
+
             if user:
+                role = user[5]
+                # Enforce portal segregation
+                if mode == "Customer Access" and role == "admin":
+                    self.show_toast("System Admins must use the Staff Portal.", "error")
+                    return
+                if mode == "Staff Portal" and role != "admin":
+                    self.show_toast("Insufficient privileges for Staff Portal.", "error")
+                    return
+
                 self.active_user_data = {
                     "id": user[0], "name": f"{user[1]} {user[2]}",
-                    "email": user[3], "phone": user[4], "role": user[5]
+                    "email": user[3], "phone": user[4], "role": role
                 }
                 self.reset_timeout()
 
-                if self.active_user_data["role"] == "admin":
+                if role == "admin":
                     self.build_admin_layout()
                     self.show_toast(f"Admin Access Granted.", "info")
                 else:
@@ -268,8 +297,18 @@ class EnterpriseBankUI(ctk.CTk):
             else:
                 self.show_toast("Invalid credentials. Access Denied.", "error")
 
-        ctk.CTkButton(card, text="Authenticate", command=login, width=280, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
-        ctk.CTkButton(card, text="Create New Account", command=self.show_registration_screen, width=280, height=40, fg_color="transparent", border_width=1).pack(pady=(0, 40))
+        ctk.CTkButton(card, text="Authenticate", command=login, width=300, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
+
+        def handle_register_btn(*args):
+            if self.auth_mode_var.get() == "Customer Access":
+                reg_btn.pack(pady=(0, 40))
+            else:
+                reg_btn.pack_forget()
+
+        reg_btn = ctk.CTkButton(card, text="Create New Account", command=self.show_registration_screen, width=300, height=40, fg_color="transparent", border_width=1)
+        reg_btn.pack(pady=(0, 40))
+
+        self.auth_mode_var.trace_add("write", handle_register_btn)
 
     def show_registration_screen(self):
         self.clear_screen()
@@ -332,14 +371,21 @@ class EnterpriseBankUI(ctk.CTk):
 
         nav_btns = [
             ("Global Overview", self.view_admin_overview),
-            ("User Management", self.view_admin_users)
+            ("Customer Directory", self.view_admin_users)
         ]
 
         for i, (text, command) in enumerate(nav_btns):
             ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"),
                           hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
 
-        ctk.CTkButton(self.sidebar, text="Terminate Session", command=self.show_auth_screen, fg_color="#c0392b", hover_color="#a53125").grid(row=7, column=0, padx=20, pady=20, sticky="ew")
+        def manual_logout():
+            self.active_user_data = {}
+            if self._timeout_id: self.after_cancel(self._timeout_id)
+            self.show_auth_screen()
+            self.auth_mode_var.set("Staff Portal") # Keep them on the staff tab
+            self.show_toast("Successfully logged out of Admin panel.", "info")
+
+        ctk.CTkButton(self.sidebar, text="Terminate Session", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=7, column=0, padx=20, pady=20, sticky="ew")
 
         self.content_area = ctk.CTkFrame(self, fg_color="transparent")
         self.content_area.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
@@ -381,7 +427,7 @@ class EnterpriseBankUI(ctk.CTk):
         list_frame = ctk.CTkScrollableFrame(container)
         list_frame.pack(fill="both", expand=True)
 
-        headers = ["ID", "Username", "Name", "Status", "Action"]
+        headers = ["ID", "Name", "Email Address", "Status", "Actions"]
         for i, h in enumerate(headers):
             ctk.CTkLabel(list_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
 
@@ -392,16 +438,88 @@ class EnterpriseBankUI(ctk.CTk):
             self.view_admin_users()
 
         for r, u in enumerate(users):
-            uid, usr, fn, ln, stat = u
+            uid, usr, fn, ln, em, stat = u
             color = "#2ecc71" if stat == "active" else "#e74c3c"
             btn_txt = "Freeze" if stat == "active" else "Unfreeze"
             btn_col = "#e74c3c" if stat == "active" else "#2ecc71"
 
             ctk.CTkLabel(list_frame, text=str(uid)).grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
-            ctk.CTkLabel(list_frame, text=usr).grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
-            ctk.CTkLabel(list_frame, text=f"{fn} {ln}").grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
+            ctk.CTkLabel(list_frame, text=f"{fn} {ln}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
+            ctk.CTkLabel(list_frame, text=em, text_color="gray").grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(list_frame, text=stat.upper(), text_color=color, font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
-            ctk.CTkButton(list_frame, text=btn_txt, width=80, fg_color=btn_col, command=lambda x=uid, y=stat: toggle_status(x, y)).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+
+            action_frame = ctk.CTkFrame(list_frame, fg_color="transparent")
+            action_frame.grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+
+            ctk.CTkButton(action_frame, text="Inspect", width=70, fg_color="#3498db", hover_color="#2980b9", command=lambda x=uid: self.view_admin_inspector(x)).pack(side="left", padx=(0, 5))
+            ctk.CTkButton(action_frame, text=btn_txt, width=70, fg_color=btn_col, command=lambda x=uid, y=stat: toggle_status(x, y)).pack(side="left")
+
+    # --- New Admin Deep Inspector ---
+    def view_admin_inspector(self, target_uid):
+        for widget in self.content_area.winfo_children(): widget.destroy()
+
+        u_info = self.backend.get_user_details(target_uid)
+        if not u_info: return
+        usr, fn, ln, em, ph, stat, created = u_info
+
+        # Header with Back Button
+        header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+
+        ctk.CTkButton(header_frame, text="< Back to Directory", width=120, fg_color="transparent", border_width=1, command=self.view_admin_users).pack(side="left", padx=(0, 20))
+        ctk.CTkLabel(header_frame, text=f"Inspecting Profile: {fn} {ln}", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+
+        container = ctk.CTkFrame(self.content_area, fg_color="transparent")
+        container.grid(row=1, column=0, sticky="nsew")
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(2, weight=1)
+
+        # 1. Profile Data Card
+        profile_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        profile_card.grid(row=0, column=0, sticky="ew", pady=(0, 15), ipadx=15, ipady=15)
+
+        details = [("Username:", usr), ("Email:", em), ("Phone:", ph), ("Status:", stat.upper()), ("Created:", created.split(" ")[0])]
+        for i, (lbl, val) in enumerate(details):
+            ctk.CTkLabel(profile_card, text=lbl, text_color="gray", width=80, anchor="w").grid(row=0, column=i*2, padx=(10, 5), pady=5)
+            ctk.CTkLabel(profile_card, text=val, font=ctk.CTkFont(weight="bold")).grid(row=0, column=(i*2)+1, padx=(0, 20), pady=5)
+
+        # 2. Account Balances Card
+        accs = self.backend.get_user_accounts(target_uid)
+        acc_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        acc_card.grid(row=1, column=0, sticky="ew", pady=(0, 15), ipadx=15, ipady=15)
+
+        ctk.CTkLabel(acc_card, text="Active Accounts", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=10, pady=(0, 10))
+        for acc_num, acc_type, bal in accs:
+            row = ctk.CTkFrame(acc_card, fg_color="transparent")
+            row.pack(fill="x", padx=10, pady=2)
+            ctk.CTkLabel(row, text=f"{acc_type} ({acc_num})", text_color="gray").pack(side="left")
+            ctk.CTkLabel(row, text=f"₹{bal:,.2f}", font=ctk.CTkFont(weight="bold")).pack(side="right")
+
+        # 3. Unified Ledger (Cross-Account)
+        history = self.backend.get_all_user_transactions(target_uid, limit=100)
+        ledger_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        ledger_card.grid(row=2, column=0, sticky="nsew", ipadx=15, ipady=15)
+
+        ctk.CTkLabel(ledger_card, text="Recent Cross-Account Activity", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=10, pady=(0, 10))
+
+        scroll = ctk.CTkScrollableFrame(ledger_card, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+
+        headers = ["Account", "Type", "Date/Time", "Target", "Amount"]
+        for i, h in enumerate(headers):
+            ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=10, pady=5, sticky="w")
+
+        for r, txn in enumerate(history):
+            a_type, t_type, amt, bal_after, tgt, ts = txn
+            fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
+            color = "#e74c3c" if t_type in ['Withdrawal', 'Transfer'] else "#2ecc71"
+            prefix = "-" if t_type in ['Withdrawal', 'Transfer'] else "+"
+
+            ctk.CTkLabel(scroll, text=a_type, text_color="gray").grid(row=r+1, column=0, padx=10, pady=2, sticky="w")
+            ctk.CTkLabel(scroll, text=t_type).grid(row=r+1, column=1, padx=10, pady=2, sticky="w")
+            ctk.CTkLabel(scroll, text=fmt_date, text_color="gray").grid(row=r+1, column=2, padx=10, pady=2, sticky="w")
+            ctk.CTkLabel(scroll, text=str(tgt) if tgt else "-", text_color="gray").grid(row=r+1, column=3, padx=10, pady=2, sticky="w")
+            ctk.CTkLabel(scroll, text=f"{prefix}₹{amt:,.2f}", text_color=color, font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=4, padx=10, pady=2, sticky="w")
 
     # ==========================================
     # CUSTOMER INTERFACE
@@ -414,7 +532,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkLabel(self.sidebar, text="NEXUS", font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").grid(row=0, column=0, padx=20, pady=(30, 30))
 
-        # ALL TABS RESTORED
         nav_btns = [
             ("Dashboard", self.view_dashboard),
             ("Operations", self.view_transfers),
@@ -481,7 +598,7 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- View 2: Transfers ---
+    # --- View 2: Transfers (Fixed Alignment & Dup Check) ---
     def view_transfers(self):
         container = self.set_content("Operations Hub")
         container.grid_rowconfigure(0, weight=1)
@@ -635,7 +752,7 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
-    # --- RESTORED View 3: Native Analytics Engine ---
+    # --- View 3: Native Analytics Engine ---
     def view_analytics(self):
         container = self.set_content("Financial Trend Analysis")
 
@@ -803,7 +920,7 @@ class EnterpriseBankUI(ctk.CTk):
         except Exception as e:
             self.show_toast("Failed to generate PDF.", "error")
 
-    # --- RESTORED View 5: Preferences ---
+    # --- View 5: Preferences ---
     def view_settings(self):
         container = self.set_content("System Preferences")
 

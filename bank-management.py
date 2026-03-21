@@ -11,7 +11,7 @@ from fpdf import FPDF
 # Core Backend: Data Management
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v3.db"):
+    def __init__(self, db_name="enterprise_bank_final.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -68,7 +68,6 @@ class BankCore:
 
             user_id = self.cursor.lastrowid
 
-            # Provision default accounts
             for acc_type in ["Checking", "Savings"]:
                 acc_num = random.randint(10000000, 99999999)
                 self.cursor.execute("INSERT INTO accounts (account_number, user_id, account_type, balance) VALUES (?, ?, ?, ?)",
@@ -134,7 +133,7 @@ class EnterpriseBankUI(ctk.CTk):
         self.backend = backend
         self.title("Nexus Financial Core - Enterprise")
         self.geometry("1100x700")
-        self.minsize(900, 600)
+        self.minsize(1000, 650)
 
         self.active_user_id = None
         self.active_user_name = None
@@ -149,7 +148,7 @@ class EnterpriseBankUI(ctk.CTk):
         for widget in self.winfo_children():
             widget.destroy()
 
-    # --- Login Screen ---
+    # --- Auth & Onboarding ---
     def show_auth_screen(self):
         self.clear_screen()
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -178,10 +177,8 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkButton(card, text="Authenticate", command=login, width=280, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
         ctk.CTkButton(card, text="Create New Account", command=self.show_registration_screen, width=280, height=40, fg_color="transparent", border_width=1).pack(pady=(0, 40))
 
-    # --- Registration Screen ---
     def show_registration_screen(self):
         self.clear_screen()
-
         reg_frame = ctk.CTkFrame(self, fg_color="transparent")
         reg_frame.pack(expand=True, fill="both")
 
@@ -195,36 +192,25 @@ class EnterpriseBankUI(ctk.CTk):
 
         fname_entry = ctk.CTkEntry(form_grid, placeholder_text="First Name", width=190, height=40)
         fname_entry.grid(row=0, column=0, padx=(0, 10), pady=10)
-
         lname_entry = ctk.CTkEntry(form_grid, placeholder_text="Last Name", width=190, height=40)
         lname_entry.grid(row=0, column=1, pady=10)
-
         email_entry = ctk.CTkEntry(form_grid, placeholder_text="Email Address", width=390, height=40)
         email_entry.grid(row=1, column=0, columnspan=2, pady=10)
-
         phone_entry = ctk.CTkEntry(form_grid, placeholder_text="Phone Number", width=390, height=40)
         phone_entry.grid(row=2, column=0, columnspan=2, pady=10)
-
         user_entry = ctk.CTkEntry(form_grid, placeholder_text="Choose Username", width=390, height=40)
         user_entry.grid(row=3, column=0, columnspan=2, pady=10)
-
         pin_entry = ctk.CTkEntry(form_grid, placeholder_text="Create 4-6 Digit PIN", show="*", width=190, height=40)
         pin_entry.grid(row=4, column=0, padx=(0, 10), pady=10)
-
         confirm_pin_entry = ctk.CTkEntry(form_grid, placeholder_text="Confirm PIN", show="*", width=190, height=40)
         confirm_pin_entry.grid(row=4, column=1, pady=10)
 
         def process_registration():
             data = {
-                "first_name": fname_entry.get().strip(),
-                "last_name": lname_entry.get().strip(),
-                "email": email_entry.get().strip(),
-                "phone": phone_entry.get().strip(),
-                "username": user_entry.get().strip(),
-                "pin": pin_entry.get().strip()
+                "first_name": fname_entry.get().strip(), "last_name": lname_entry.get().strip(),
+                "email": email_entry.get().strip(), "phone": phone_entry.get().strip(),
+                "username": user_entry.get().strip(), "pin": pin_entry.get().strip()
             }
-            confirm_pin = confirm_pin_entry.get().strip()
-
             if not all(data.values()):
                 messagebox.showerror("Validation Error", "All fields are required.")
                 return
@@ -237,7 +223,7 @@ class EnterpriseBankUI(ctk.CTk):
             if not data["pin"].isdigit() or not (4 <= len(data["pin"]) <= 6):
                 messagebox.showerror("Validation Error", "PIN must be a 4 to 6 digit number.")
                 return
-            if data["pin"] != confirm_pin:
+            if data["pin"] != confirm_pin_entry.get().strip():
                 messagebox.showerror("Validation Error", "PINs do not match.")
                 return
 
@@ -249,12 +235,11 @@ class EnterpriseBankUI(ctk.CTk):
                 messagebox.showerror("Registration Failed", msg)
 
         ctk.CTkButton(card, text="Submit Application", command=process_registration, width=390, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(30, 10))
-        ctk.CTkButton(card, text="Cancel & Return", command=self.show_auth_screen, width=390, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 30))
+        ctk.CTkButton(card, text="Cancel", command=self.show_auth_screen, width=390, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 30))
 
-    # --- Main Navigation Shell ---
+    # --- Main App Shell ---
     def build_main_layout(self):
         self.clear_screen()
-
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_rowconfigure(6, weight=1)
@@ -263,8 +248,9 @@ class EnterpriseBankUI(ctk.CTk):
 
         nav_btns = [
             ("Dashboard", self.view_dashboard),
-            ("Transfers", self.view_transfers),
-            ("Statements & Logs", self.view_history)
+            ("Operations", self.view_transfers),
+            ("Analytics", self.view_analytics),
+            ("Statements", self.view_history)
         ]
 
         for i, (text, command) in enumerate(nav_btns):
@@ -288,20 +274,16 @@ class EnterpriseBankUI(ctk.CTk):
         for widget in self.content_area.winfo_children():
             widget.destroy()
         self.load_data()
-
         header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
-
         ctk.CTkLabel(header_frame, text=title, font=ctk.CTkFont(size=32, weight="bold")).pack(side="left")
-
         frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
         frame.grid(row=1, column=0, sticky="nsew")
         return frame, header_frame
 
-    # --- View: Dashboard ---
+    # --- View 1: Dashboard ---
     def view_dashboard(self):
         container, _ = self.set_content(f"Welcome, {self.active_user_name.split()[0]}")
-
         total_bal = sum(acc['bal'] for acc in self.active_accounts.values())
 
         metric_frame = ctk.CTkFrame(container, fg_color="transparent")
@@ -324,67 +306,152 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- View: Transfers ---
+    # --- View 2: Unified Transfers ---
     def view_transfers(self):
-        container, _ = self.set_content("Operations & Routing")
+        container, _ = self.set_content("Operations Hub")
 
-        tabs = ctk.CTkTabview(container)
-        tabs.pack(fill="both", expand=True)
-        tabs.add("Quick Deposit/Withdraw")
-        tabs.add("Peer-to-Peer Routing")
+        form_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=15)
+        form_card.pack(fill="y", expand=True, padx=40, pady=20, ipadx=40, ipady=20)
 
-        t1 = tabs.tab("Quick Deposit/Withdraw")
-        acc_selector = ctk.CTkOptionMenu(t1, values=list(self.active_accounts.keys()), width=300)
-        acc_selector.pack(pady=(30, 10))
-        amt_entry = ctk.CTkEntry(t1, placeholder_text="Amount (₹)", width=300, justify="center")
-        amt_entry.pack(pady=10)
+        ctk.CTkLabel(form_card, text="Select Transaction Type", text_color="gray", font=ctk.CTkFont(size=14)).pack(pady=(20, 10))
 
-        def exec_quick(txn_type):
-            acc_id = self.active_accounts[acc_selector.get()]["id"]
+        self.txn_type_var = ctk.StringVar(value="Transfer")
+        txn_selector = ctk.CTkSegmentedButton(form_card, values=["Deposit", "Withdraw", "Transfer"],
+                                              variable=self.txn_type_var, width=400, height=35)
+        txn_selector.pack(pady=(0, 20))
+
+        fields_frame = ctk.CTkFrame(form_card, fg_color="transparent")
+        fields_frame.pack(fill="x")
+
+        ctk.CTkLabel(fields_frame, text="Source Account", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5))
+
+        acc_options = [f"{name} ({data['id']})" for name, data in self.active_accounts.items()]
+        source_sel = ctk.CTkOptionMenu(fields_frame, values=acc_options, width=400, height=40)
+        source_sel.grid(row=1, column=0, sticky="w", pady=(0, 15))
+
+        target_label = ctk.CTkLabel(fields_frame, text="Destination Account Number", font=ctk.CTkFont(weight="bold"))
+        target_entry = ctk.CTkEntry(fields_frame, placeholder_text="e.g., 12345678", width=400, height=40)
+
+        ctk.CTkLabel(fields_frame, text="Amount (₹)", font=ctk.CTkFont(weight="bold")).grid(row=4, column=0, sticky="w", pady=(10, 5))
+        amt_entry = ctk.CTkEntry(fields_frame, placeholder_text="0.00", width=400, height=40, font=ctk.CTkFont(size=18))
+        amt_entry.grid(row=5, column=0, sticky="w", pady=(0, 20))
+
+        def update_form_state(*args):
+            if self.txn_type_var.get() == "Transfer":
+                target_label.grid(row=2, column=0, sticky="w", pady=(10, 5))
+                target_entry.grid(row=3, column=0, sticky="w", pady=(0, 15))
+            else:
+                target_label.grid_remove()
+                target_entry.grid_remove()
+
+        self.txn_type_var.trace_add("write", update_form_state)
+        update_form_state()
+
+        def execute_action():
+            src_name = source_sel.get().split(" (")[0]
+            src_id = self.active_accounts[src_name]["id"]
+            txn_type = self.txn_type_var.get()
+
             try:
                 amt = float(amt_entry.get())
-                if amt <= 0: raise ValueError
-                success, msg = self.backend.process_transaction(acc_id, amt, txn_type, acc_id if txn_type == 'Deposit' else None)
+                if amt <= 0: raise ValueError("Transaction amount must be greater than zero.")
+
+                if txn_type == "Transfer":
+                    tgt_id_str = target_entry.get().strip()
+                    if not tgt_id_str.isdigit(): raise ValueError("Destination must be a valid numeric ID.")
+                    tgt_id = int(tgt_id_str)
+                    if tgt_id == src_id: raise ValueError("Cannot route funds to the originating account.")
+                    success, msg = self.backend.process_transaction(src_id, amt, 'Transfer', tgt_id)
+                else:
+                    db_txn_type = "Deposit" if txn_type == "Deposit" else "Withdrawal"
+                    success, msg = self.backend.process_transaction(src_id, amt, db_txn_type, src_id if db_txn_type == 'Deposit' else None)
+
                 if success:
-                    messagebox.showinfo("Success", f"{txn_type} successful.")
+                    messagebox.showinfo("Authorized", f"Successfully processed ₹{amt:,.2f}.")
                     amt_entry.delete(0, 'end')
-                else:
-                    messagebox.showerror("Failed", msg)
-            except ValueError:
-                messagebox.showerror("Error", "Invalid amount.")
-
-        btn_box = ctk.CTkFrame(t1, fg_color="transparent")
-        btn_box.pack(pady=20)
-        ctk.CTkButton(btn_box, text="Deposit", command=lambda: exec_quick('Deposit'), fg_color="#2ecc71", width=140).pack(side="left", padx=10)
-        ctk.CTkButton(btn_box, text="Withdraw", command=lambda: exec_quick('Withdrawal'), fg_color="#e74c3c", width=140).pack(side="left", padx=10)
-
-        t2 = tabs.tab("Peer-to-Peer Routing")
-        source_sel = ctk.CTkOptionMenu(t2, values=list(self.active_accounts.keys()), width=300)
-        source_sel.pack(pady=(30, 10))
-        target_entry = ctk.CTkEntry(t2, placeholder_text="Target Account Number", width=300, justify="center")
-        target_entry.pack(pady=10)
-        p2p_amt = ctk.CTkEntry(t2, placeholder_text="Amount (₹)", width=300, justify="center")
-        p2p_amt.pack(pady=10)
-
-        def exec_p2p():
-            src_id = self.active_accounts[source_sel.get()]["id"]
-            try:
-                tgt_id = int(target_entry.get())
-                amt = float(p2p_amt.get())
-                if amt <= 0: raise ValueError
-                success, msg = self.backend.process_transaction(src_id, amt, 'Transfer', tgt_id)
-                if success:
-                    messagebox.showinfo("Routed", "Funds successfully transferred.")
                     target_entry.delete(0, 'end')
-                    p2p_amt.delete(0, 'end')
                 else:
-                    messagebox.showerror("Failed", msg)
-            except ValueError:
-                messagebox.showerror("Error", "Check target format and amount.")
+                    messagebox.showerror("Declined", msg)
 
-        ctk.CTkButton(t2, text="Execute Transfer", command=exec_p2p, width=300).pack(pady=20)
+            except ValueError as e:
+                err_msg = str(e) if "could not convert" not in str(e) else "Please enter a valid numerical amount."
+                messagebox.showerror("Input Validation", err_msg)
 
-    # --- View: History Grid & PDF Generation ---
+        ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action,
+                      width=400, height=45, font=ctk.CTkFont(weight="bold", size=15)).pack(pady=(10, 20))
+
+    # --- View 3: Native Analytics Engine ---
+    def view_analytics(self):
+        container, _ = self.set_content("Financial Trend Analysis")
+
+        self.analytics_acc_var = ctk.StringVar(value=list(self.active_accounts.keys())[0])
+        acc_selector = ctk.CTkSegmentedButton(container, values=list(self.active_accounts.keys()),
+                                              variable=self.analytics_acc_var, command=self._trigger_render)
+        acc_selector.pack(fill="x", pady=(0, 10))
+
+        self.canvas_frame = ctk.CTkFrame(container, fg_color=("gray85", "#1e1e1e"), corner_radius=15)
+        self.canvas_frame.pack(fill="both", expand=True, pady=10)
+
+        # Determine theme color for canvas bg
+        bg_color = "#1e1e1e" if ctk.get_appearance_mode() == "Dark" else "#dce4ee"
+        self.canvas = ctk.CTkCanvas(self.canvas_frame, bg=bg_color, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Delay drawing slightly to allow canvas to calculate its pixel width/height during UI build
+        self.after(100, self._render_chart)
+
+    def _trigger_render(self, event=None):
+        self._render_chart()
+
+    def _render_chart(self):
+        self.canvas.delete("all")
+        acc_type = self.analytics_acc_var.get()
+        acc_id = self.active_accounts[acc_type]["id"]
+        logs = self.backend.get_history(acc_id)
+
+        c_width = self.canvas.winfo_width()
+        c_height = self.canvas.winfo_height()
+
+        if c_width < 50 or c_height < 50: return # Prevent drawing before UI is fully built
+
+        if not logs or len(logs) < 2:
+            self.canvas.create_text(c_width/2, c_height/2, text="Awaiting further transaction data to generate trend models.",
+                                    fill="gray", font=("Arial", 14))
+            return
+
+        balances = [txn[2] for txn in logs[:30]][::-1] # Up to last 30 transactions
+        max_bal = max(balances)
+        min_bal = min(balances)
+        spread = max_bal - min_bal if max_bal != min_bal else 100
+
+        pad_x = 60
+        pad_y = 40
+
+        # Gridlines & Y-Axis Labels
+        for i in range(5):
+            y = pad_y + i * ((c_height - 2*pad_y) / 4)
+            self.canvas.create_line(pad_x, y, c_width - pad_x, y, fill="#333333" if ctk.get_appearance_mode() == "Dark" else "#a0a0a0", dash=(4, 4))
+            val = max_bal - (spread * (i / 4))
+            self.canvas.create_text(pad_x - 10, y, text=f"₹{val:,.0f}", fill="gray", anchor="e", font=("Arial", 10))
+
+        # Map Coordinates
+        x_step = (c_width - 2*pad_x) / (len(balances) - 1)
+        points = []
+        for i, bal in enumerate(balances):
+            x = pad_x + (i * x_step)
+            y = c_height - pad_y - (((bal - min_bal) / spread) * (c_height - 2*pad_y))
+            points.append((x, y))
+
+        # Draw Trend Line & Data Nodes
+        line_color = "#3498db"
+        node_color = "#2ecc71"
+
+        for i in range(len(points)-1):
+            self.canvas.create_line(points[i][0], points[i][1], points[i+1][0], points[i+1][1], fill=line_color, width=3)
+        for x, y in points:
+            self.canvas.create_oval(x-5, y-5, x+5, y+5, fill=node_color, outline="#1e1e1e", width=2)
+
+    # --- View 4: Statements & PDF Export ---
     def view_history(self):
         container, header = self.set_content("Account Statements")
 
@@ -435,7 +502,6 @@ class EnterpriseBankUI(ctk.CTk):
             messagebox.showinfo("No Data", "There are no transactions to export.")
             return
 
-        # Open file dialog for save location
         file_path = filedialog.asksaveasfilename(
             defaultextension=".pdf",
             filetypes=[("PDF files", "*.pdf")],
@@ -443,21 +509,18 @@ class EnterpriseBankUI(ctk.CTk):
             initialfile=f"Nexus_Statement_{acc_id}.pdf"
         )
 
-        if not file_path:
-            return  # User cancelled the dialog
+        if not file_path: return
 
         try:
             pdf = FPDF()
             pdf.add_page()
 
-            # Header
             pdf.set_font("Arial", "B", 18)
             pdf.cell(190, 10, txt="NEXUS Financial Core", ln=True, align='C')
             pdf.set_font("Arial", "B", 12)
             pdf.cell(190, 10, txt="Official Account Statement", ln=True, align='C')
             pdf.ln(10)
 
-            # Account Details
             pdf.set_font("Arial", "", 10)
             pdf.cell(100, 8, txt=f"Account Holder: {self.active_user_name}", ln=False)
             pdf.cell(90, 8, txt=f"Date Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
@@ -465,7 +528,6 @@ class EnterpriseBankUI(ctk.CTk):
             pdf.cell(90, 8, txt=f"Account Number: {acc_id}", ln=True)
             pdf.ln(10)
 
-            # Table Header
             pdf.set_font("Arial", "B", 10)
             pdf.cell(35, 10, "Date/Time", 1)
             pdf.cell(30, 10, "Type", 1)
@@ -474,7 +536,6 @@ class EnterpriseBankUI(ctk.CTk):
             pdf.cell(45, 10, "Balance (INR)", 1)
             pdf.ln()
 
-            # Table Data
             pdf.set_font("Arial", "", 9)
             for txn in logs:
                 txn_type, amt, bal_after, target, ts = txn

@@ -960,7 +960,8 @@ class EnterpriseBankUI(ctk.CTk):
         for type_name, data in self.active_accounts.items():
             row = ctk.CTkFrame(container, fg_color=("gray80", "gray15"), corner_radius=8)
             row.pack(fill="x", pady=5, ipady=10)
-            ctk.CTkLabel(row, text=type_name, font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=20)
+            # THE FIX: Added width=100 and anchor="w" to perfectly align the next elements
+            ctk.CTkLabel(row, text=type_name, font=ctk.CTkFont(size=16, weight="bold"), width=100, anchor="w").pack(side="left", padx=(20, 10))
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 

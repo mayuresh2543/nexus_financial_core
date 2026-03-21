@@ -62,7 +62,6 @@ class BankCore:
         self._seed_admin()
 
     def _seed_admin(self):
-        """Injects a master admin account on first run."""
         self.cursor.execute("SELECT 1 FROM users WHERE username='admin'")
         if not self.cursor.fetchone():
             salt = secrets.token_hex(16)
@@ -147,7 +146,6 @@ class BankCore:
                     self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_rec_bal, receiver_acc))
                     self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
                                         (receiver_acc, 'Received', amount, new_rec_bal, sender_acc))
-
                     target_name = self.verify_account(receiver_acc)
 
             self.conn.commit()
@@ -412,21 +410,30 @@ class EnterpriseBankUI(ctk.CTk):
         self.clear_screen()
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(6, weight=1)
+        self.sidebar.grid_rowconfigure(7, weight=1)
 
         ctk.CTkLabel(self.sidebar, text="NEXUS", font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").grid(row=0, column=0, padx=20, pady=(30, 30))
 
+        # ALL TABS RESTORED
         nav_btns = [
             ("Dashboard", self.view_dashboard),
             ("Operations", self.view_transfers),
-            ("Statements", self.view_history)
+            ("Analytics", self.view_analytics),
+            ("Statements", self.view_history),
+            ("Preferences", self.view_settings)
         ]
 
         for i, (text, command) in enumerate(nav_btns):
             ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"),
                           hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
 
-        ctk.CTkButton(self.sidebar, text="Sign Out", command=self.show_auth_screen, fg_color="#c0392b", hover_color="#a53125").grid(row=7, column=0, padx=20, pady=20, sticky="ew")
+        def manual_logout():
+            self.active_user_data = {}
+            if self._timeout_id: self.after_cancel(self._timeout_id)
+            self.show_auth_screen()
+            self.show_toast("Successfully logged out.", "info")
+
+        ctk.CTkButton(self.sidebar, text="Sign Out", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=8, column=0, padx=20, pady=20, sticky="ew")
 
         self.content_area = ctk.CTkFrame(self, fg_color="transparent")
         self.content_area.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
@@ -449,6 +456,7 @@ class EnterpriseBankUI(ctk.CTk):
         frame.grid(row=1, column=0, sticky="nsew")
         return frame
 
+    # --- View 1: Dashboard ---
     def view_dashboard(self):
         container = self.set_content(f"Welcome, {self.active_user_data['name'].split()[0]}")
         total_bal = sum(acc['bal'] for acc in self.active_accounts.values())
@@ -473,7 +481,7 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- Upgraded View: Transfers (Fixed Alignment & Duplicate Check) ---
+    # --- View 2: Transfers ---
     def view_transfers(self):
         container = self.set_content("Operations Hub")
         container.grid_rowconfigure(0, weight=1)
@@ -494,7 +502,6 @@ class EnterpriseBankUI(ctk.CTk):
         source_sel = ctk.CTkOptionMenu(fields_frame, values=acc_options, width=400, height=40)
         source_sel.grid(row=1, column=0, sticky="w", pady=(0, 15))
 
-        # Aligned Header Frame
         target_header_frame = ctk.CTkFrame(fields_frame, fg_color="transparent")
         target_label = ctk.CTkLabel(target_header_frame, text="Destination", font=ctk.CTkFont(weight="bold"))
         target_label.pack(side="left")
@@ -531,7 +538,6 @@ class EnterpriseBankUI(ctk.CTk):
                     status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
                     return
 
-                # Check for existing duplicates
                 existing_bens = [b[1] for b in self.backend.get_beneficiaries(self.active_user_data["id"])]
                 if int(tgt) in existing_bens:
                     status_label.configure(text="Account already exists in Address Book.", text_color="#e74c3c")
@@ -573,7 +579,6 @@ class EnterpriseBankUI(ctk.CTk):
             save_btn = ctk.CTkButton(modal, text="Save Beneficiary", command=save_ben, state="disabled")
             save_btn.pack(pady=15)
 
-        # Packed into header frame to lock 400px width alignment
         manage_btn = ctk.CTkButton(target_header_frame, text="Manage Contacts", width=120, height=28, fg_color="transparent", border_width=1, command=open_beneficiary_manager)
 
         def update_form_state(*args):
@@ -630,7 +635,57 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
-    # --- View: Statements (Paginated) ---
+    # --- RESTORED View 3: Native Analytics Engine ---
+    def view_analytics(self):
+        container = self.set_content("Financial Trend Analysis")
+
+        self.analytics_acc_var = ctk.StringVar(value=list(self.active_accounts.keys())[0])
+        acc_selector = ctk.CTkSegmentedButton(container, values=list(self.active_accounts.keys()),
+                                              variable=self.analytics_acc_var, command=self._trigger_render)
+        acc_selector.pack(fill="x", pady=(0, 10))
+
+        self.canvas_frame = ctk.CTkFrame(container, fg_color=("gray85", "#1e1e1e"), corner_radius=15)
+        self.canvas_frame.pack(fill="both", expand=True, pady=10)
+
+        bg_color = "#1e1e1e" if ctk.get_appearance_mode() == "Dark" else "#dce4ee"
+        self.canvas = ctk.CTkCanvas(self.canvas_frame, bg=bg_color, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True, padx=20, pady=20)
+
+        self.after(100, self._render_chart)
+
+    def _trigger_render(self, event=None):
+        self._render_chart()
+
+    def _render_chart(self):
+        self.canvas.delete("all")
+        acc_id = self.active_accounts[self.analytics_acc_var.get()]["id"]
+        logs = self.backend.get_history(acc_id, limit=30, offset=0)
+
+        c_width, c_height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if c_width < 50 or c_height < 50: return
+
+        if not logs or len(logs) < 2:
+            self.canvas.create_text(c_width/2, c_height/2, text="Awaiting further transaction data to generate trend models.", fill="gray", font=("Arial", 14))
+            return
+
+        balances = [txn[2] for txn in logs[::-1]]
+        max_bal, min_bal = max(balances), min(balances)
+        spread = max_bal - min_bal if max_bal != min_bal else 100
+        pad_x, pad_y = 60, 40
+
+        for i in range(5):
+            y = pad_y + i * ((c_height - 2*pad_y) / 4)
+            self.canvas.create_line(pad_x, y, c_width - pad_x, y, fill="#333333" if ctk.get_appearance_mode() == "Dark" else "#a0a0a0", dash=(4, 4))
+            val = max_bal - (spread * (i / 4))
+            self.canvas.create_text(pad_x - 10, y, text=f"₹{val:,.0f}", fill="gray", anchor="e", font=("Arial", 10))
+
+        x_step = (c_width - 2*pad_x) / (len(balances) - 1)
+        points = [(pad_x + (i * x_step), c_height - pad_y - (((bal - min_bal) / spread) * (c_height - 2*pad_y))) for i, bal in enumerate(balances)]
+
+        for i in range(len(points)-1): self.canvas.create_line(points[i][0], points[i][1], points[i+1][0], points[i+1][1], fill="#3498db", width=3)
+        for x, y in points: self.canvas.create_oval(x-5, y-5, x+5, y+5, fill="#2ecc71", outline="#1e1e1e", width=2)
+
+    # --- View 4: Statements ---
     def view_history(self):
         container = self.set_content("Account Statements")
 
@@ -706,7 +761,6 @@ class EnterpriseBankUI(ctk.CTk):
     def _generate_pdf(self):
         acc_type = self.current_history_acc.get()
         acc_id = self.active_accounts[acc_type]["id"]
-        # Fetch up to 500 records for the PDF export specifically, rather than just the paginated view
         logs = self.backend.get_history(acc_id, limit=500, offset=0)
 
         if not logs:
@@ -748,6 +802,41 @@ class EnterpriseBankUI(ctk.CTk):
             self.show_toast("Statement successfully exported.", "success")
         except Exception as e:
             self.show_toast("Failed to generate PDF.", "error")
+
+    # --- RESTORED View 5: Preferences ---
+    def view_settings(self):
+        container = self.set_content("System Preferences")
+
+        profile_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=15)
+        profile_card.pack(fill="x", pady=(0, 20), ipadx=20, ipady=20)
+
+        ctk.CTkLabel(profile_card, text="User Profile", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=20, pady=(10, 5))
+
+        info_frame = ctk.CTkFrame(profile_card, fg_color="transparent")
+        info_frame.pack(fill="x", padx=20, pady=10)
+
+        user_info = [
+            ("Full Name:", self.active_user_data['name']),
+            ("Email Address:", self.active_user_data['email']),
+            ("Registered Phone:", self.active_user_data['phone'])
+        ]
+
+        for i, (label_txt, val_txt) in enumerate(user_info):
+            ctk.CTkLabel(info_frame, text=label_txt, text_color="gray", width=120, anchor="w").grid(row=i, column=0, pady=5, sticky="w")
+            ctk.CTkLabel(info_frame, text=val_txt, font=ctk.CTkFont(weight="bold")).grid(row=i, column=1, pady=5, sticky="w")
+
+        theme_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=15)
+        theme_card.pack(fill="x", ipadx=20, ipady=20)
+
+        ctk.CTkLabel(theme_card, text="Appearance", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=20, pady=(10, 15))
+
+        def set_theme(choice):
+            ctk.set_appearance_mode(choice)
+            self.show_toast(f"Theme changed to {choice}", "info")
+
+        theme_switch = ctk.CTkSegmentedButton(theme_card, values=["Dark", "Light", "System"], command=set_theme)
+        theme_switch.pack(anchor="w", padx=20)
+        theme_switch.set(ctk.get_appearance_mode())
 
 # ==========================================
 # Execution

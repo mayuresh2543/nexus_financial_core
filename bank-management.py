@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from tkinter import filedialog
+from tkinter import filedialog, simpledialog
 import sqlite3
 import random
 import hashlib
@@ -13,11 +13,10 @@ from fpdf import FPDF
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v11.db"):
+    def __init__(self, db_name="enterprise_bank_v12.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
-        self.annual_interest_rate = 0.085  # 8.5% Loan APR
         self._initialize_schema()
 
     def _initialize_schema(self):
@@ -33,6 +32,7 @@ class BankCore:
                 phone TEXT NOT NULL,
                 role TEXT DEFAULT 'customer',
                 status TEXT DEFAULT 'active',
+                credit_score INTEGER DEFAULT 650,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS accounts (
@@ -40,6 +40,15 @@ class BankCore:
                 user_id INTEGER,
                 account_type TEXT NOT NULL,
                 balance REAL DEFAULT 0.0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
+            CREATE TABLE IF NOT EXISTS vaults (
+                vault_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                name TEXT NOT NULL,
+                target_amount REAL NOT NULL,
+                current_amount REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'active',
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
             CREATE TABLE IF NOT EXISTS cards (
@@ -62,7 +71,6 @@ class BankCore:
                 duration_months INTEGER NOT NULL,
                 maturity_date TIMESTAMP NOT NULL,
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (linked_account) REFERENCES accounts(account_number)
             );
@@ -92,7 +100,6 @@ class BankCore:
                 emi_amount REAL NOT NULL,
                 balance_remaining REAL NOT NULL,
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
         ''')
@@ -105,9 +112,9 @@ class BankCore:
             salt = secrets.token_hex(16)
             hashed_pin = self.hash_data("0000", salt)
             self.cursor.execute('''
-                INSERT INTO users (username, pin_hash, salt, first_name, last_name, email, phone, role)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', ("admin", hashed_pin, salt, "System", "Administrator", "admin@nexus.core", "0000000000", "admin"))
+                INSERT INTO users (username, pin_hash, salt, first_name, last_name, email, phone, role, credit_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', ("admin", hashed_pin, salt, "System", "Administrator", "admin@nexus.core", "0000000000", "admin", 850))
             self.conn.commit()
 
     def hash_data(self, pin, salt):
@@ -125,7 +132,6 @@ class BankCore:
 
             user_id = self.cursor.lastrowid
 
-            # Generate Accounts & Virtual Card
             chk_acc = None
             for acc_type in ["Checking", "Savings"]:
                 acc_num = random.randint(10000000, 99999999)
@@ -133,12 +139,10 @@ class BankCore:
                                     (acc_num, user_id, acc_type, 0.0))
                 if acc_type == "Checking": chk_acc = acc_num
 
-            # Mint Virtual Debit Card linked to Checking
             card_num = " ".join([str(random.randint(1000, 9999)) for _ in range(4)])
             cvv = str(random.randint(100, 999))
             exp_year = datetime.now().year + 4
-            exp_month = f"{datetime.now().month:02d}"
-            expiry = f"{exp_month}/{str(exp_year)[-2:]}"
+            expiry = f"{datetime.now().month:02d}/{str(exp_year)[-2:]}"
             self.cursor.execute("INSERT INTO cards (user_id, account_number, card_number, expiry, cvv) VALUES (?, ?, ?, ?, ?)",
                                 (user_id, chk_acc, card_num, expiry, cvv))
 
@@ -154,8 +158,7 @@ class BankCore:
         if result:
             user_id, stored_hash, salt, first_name, last_name, email, phone, role, status = result
             if self.hash_data(pin, salt) == stored_hash:
-                if status == 'frozen' and role != 'admin':
-                    return "FROZEN"
+                if status == 'frozen' and role != 'admin': return "FROZEN"
                 return (user_id, first_name, last_name, email, phone, role)
         return None
 
@@ -163,23 +166,30 @@ class BankCore:
         self.cursor.execute("SELECT account_number, account_type, balance FROM accounts WHERE user_id=?", (user_id,))
         return self.cursor.fetchall()
 
+    def get_credit_score(self, user_id):
+        self.cursor.execute("SELECT credit_score FROM users WHERE user_id=?", (user_id,))
+        return self.cursor.fetchone()[0]
+
+    def update_credit_score(self, user_id, points):
+        """Gamification Engine: Bounds the score between 300 and 850."""
+        current = self.get_credit_score(user_id)
+        new_score = max(300, min(850, current + points))
+        self.cursor.execute("UPDATE users SET credit_score=? WHERE user_id=?", (new_score, user_id))
+        self.conn.commit()
+
     def verify_account(self, account_number):
         self.cursor.execute('''
             SELECT u.first_name, u.last_name
-            FROM accounts a
-            JOIN users u ON a.user_id = u.user_id
-            WHERE a.account_number = ?
+            FROM accounts a JOIN users u ON a.user_id = u.user_id WHERE a.account_number = ?
         ''', (account_number,))
         result = self.cursor.fetchone()
-        if result:
-            return f"{result[0]} {result[1][0]}."
+        if result: return f"{result[0]} {result[1][0]}."
         return None
 
     def process_transaction(self, sender_acc, amount, txn_type, receiver_acc=None):
         try:
             self.conn.execute("BEGIN TRANSACTION")
 
-            # Security: Check if linked card is frozen before allowing withdrawals
             if txn_type in ['Withdrawal', 'Transfer']:
                 self.cursor.execute("SELECT status FROM cards WHERE account_number=?", (sender_acc,))
                 card_stat = self.cursor.fetchone()
@@ -192,7 +202,7 @@ class BankCore:
             if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment'] and sender_bal < amount:
                 raise ValueError("Insufficient Funds")
 
-            new_sender_bal = sender_bal - amount if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation'] else sender_bal + amount
+            new_sender_bal = sender_bal - amount if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation', 'Vault Funding'] else sender_bal + amount
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_sender_bal, sender_acc))
             self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
                                 (sender_acc, txn_type, amount, new_sender_bal, receiver_acc))
@@ -226,16 +236,70 @@ class BankCore:
         self.cursor.execute("INSERT INTO beneficiaries (user_id, nickname, target_account) VALUES (?, ?, ?)", (user_id, nickname, target_account))
         self.conn.commit()
 
-    # --- Credit Engine ---
-    def calculate_emi(self, principal, tenure_months):
-        r_monthly = self.annual_interest_rate / 12
+    # --- Vaults (Visual Savings) ---
+    def get_vaults(self, user_id):
+        self.cursor.execute("SELECT vault_id, name, target_amount, current_amount, status FROM vaults WHERE user_id=?", (user_id,))
+        return self.cursor.fetchall()
+
+    def create_vault(self, user_id, name, target):
+        self.cursor.execute("INSERT INTO vaults (user_id, name, target_amount) VALUES (?, ?, ?)", (user_id, name, target))
+        self.conn.commit()
+        return True, "Vault Created."
+
+    def manage_vault(self, user_id, vault_id, amount, action="fund"):
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            self.cursor.execute("SELECT target_amount, current_amount FROM vaults WHERE vault_id=?", (vault_id,))
+            tgt, cur = self.cursor.fetchone()
+
+            self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
+            chk_acc, chk_bal = self.cursor.fetchone()
+
+            if action == "fund":
+                if chk_bal < amount: raise ValueError("Insufficient funds in Checking.")
+                if cur + amount > tgt: amount = tgt - cur # Cap at target
+
+                new_chk = chk_bal - amount
+                new_vault = cur + amount
+                self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_chk, chk_acc))
+                self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)", (chk_acc, 'Vault Funding', amount, new_chk))
+
+                stat = 'completed' if new_vault >= tgt else 'active'
+                self.cursor.execute("UPDATE vaults SET current_amount=?, status=? WHERE vault_id=?", (new_vault, stat, vault_id))
+
+            elif action == "withdraw":
+                if cur < amount: raise ValueError("Insufficient funds in Vault.")
+                new_vault = cur - amount
+                new_chk = chk_bal + amount
+                self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_chk, chk_acc))
+                self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)", (chk_acc, 'Vault Withdrawal', amount, new_chk))
+                self.cursor.execute("UPDATE vaults SET current_amount=?, status='active' WHERE vault_id=?", (new_vault, vault_id))
+
+            self.conn.commit()
+            return True, "Vault transaction successful."
+        except Exception as e:
+            self.conn.rollback()
+            return False, str(e)
+
+    # --- Credit Engine (Dynamic Pricing) ---
+    def get_dynamic_rate(self, user_id):
+        score = self.get_credit_score(user_id)
+        if score >= 750: return 0.055
+        if score >= 700: return 0.070
+        if score >= 650: return 0.085
+        if score >= 600: return 0.120
+        return 0.150
+
+    def calculate_emi(self, principal, tenure_months, rate):
+        r_monthly = rate / 12
         emi = principal * r_monthly * ((1 + r_monthly) ** tenure_months) / (((1 + r_monthly) ** tenure_months) - 1)
         return round(emi, 2)
 
     def apply_for_loan(self, user_id, principal, tenure_months):
         try:
             self.conn.execute("BEGIN TRANSACTION")
-            emi = self.calculate_emi(principal, tenure_months)
+            rate = self.get_dynamic_rate(user_id)
+            emi = self.calculate_emi(principal, tenure_months, rate)
             total_payable = emi * tenure_months
 
             self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
@@ -246,7 +310,7 @@ class BankCore:
             self.cursor.execute('''
                 INSERT INTO loans (user_id, principal, interest_rate, tenure_months, emi_amount, balance_remaining)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, principal, self.annual_interest_rate, tenure_months, emi, total_payable))
+            ''', (user_id, principal, rate, tenure_months, emi, total_payable))
 
             new_bal = chk_bal + principal
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, chk_acc))
@@ -254,7 +318,8 @@ class BankCore:
                                 (chk_acc, 'Loan Disbursement', principal, new_bal))
 
             self.conn.commit()
-            return True, "Loan approved and funds disbursed."
+            self.update_credit_score(user_id, -10) # Hard inquiry penalty
+            return True, "Loan approved. Credit score impacted."
         except Exception as e:
             self.conn.rollback()
             return False, str(e)
@@ -273,7 +338,6 @@ class BankCore:
 
             self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
             chk_acc, chk_bal = self.cursor.fetchone()
-
             if chk_bal < emi: raise ValueError("Insufficient funds in Checking for EMI payment.")
 
             new_chk_bal = chk_bal - emi
@@ -288,7 +352,8 @@ class BankCore:
                 self.cursor.execute("UPDATE loans SET balance_remaining = ? WHERE loan_id=?", (new_rem_bal, loan_id))
 
             self.conn.commit()
-            return True, "EMI Payment Successful."
+            self.update_credit_score(user_id, 5) # Gamification reward
+            return True, "EMI Payment Successful. Credit score improved."
         except Exception as e:
             self.conn.rollback()
             return False, str(e)
@@ -315,7 +380,6 @@ class BankCore:
             acc_data = self.cursor.fetchone()
             if not acc_data: raise ValueError("Invalid account selected.")
             chk_bal = acc_data[0]
-
             if chk_bal < amount: raise ValueError("Insufficient funds in selected account.")
 
             new_bal = chk_bal - amount
@@ -324,11 +388,12 @@ class BankCore:
 
             mat_ts = datetime.now().timestamp() + (months * 30.44 * 24 * 3600)
             mat_date = datetime.fromtimestamp(mat_ts).strftime('%Y-%m-%d %H:%M:%S')
-            rate = 0.05 if months <= 6 else 0.075 # Dynamic rate
+            rate = 0.05 if months <= 6 else 0.075
 
             self.cursor.execute("INSERT INTO fixed_deposits (user_id, linked_account, principal, interest_rate, duration_months, maturity_date) VALUES (?, ?, ?, ?, ?, ?)",
                                 (user_id, source_acc, amount, rate, months, mat_date))
             self.conn.commit()
+            self.update_credit_score(user_id, 2) # Financial responsibility reward
             return True, "Fixed Deposit securely locked."
         except Exception as e:
             self.conn.rollback()
@@ -346,7 +411,7 @@ class BankCore:
             self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (linked_acc,))
             chk_bal = self.cursor.fetchone()[0]
 
-            new_bal = chk_bal + prin # Principal returned, interest forfeited
+            new_bal = chk_bal + prin
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, linked_acc))
             self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)", (linked_acc, 'FD Broken (Principal Returned)', prin, new_bal))
             self.cursor.execute("UPDATE fixed_deposits SET status='broken' WHERE fd_id=?", (fd_id,))
@@ -371,26 +436,21 @@ class BankCore:
         self.conn.commit()
 
     def get_user_details(self, user_id):
-        self.cursor.execute("SELECT username, first_name, last_name, email, phone, status, created_at FROM users WHERE user_id=?", (user_id,))
+        self.cursor.execute("SELECT username, first_name, last_name, email, phone, status, credit_score, created_at FROM users WHERE user_id=?", (user_id,))
         return self.cursor.fetchone()
 
     def get_all_user_transactions(self, user_id, limit=50):
         self.cursor.execute('''
             SELECT a.account_type, t.txn_type, t.amount, t.balance_after, t.target_account, t.timestamp
-            FROM transactions t
-            JOIN accounts a ON t.account_number = a.account_number
-            WHERE a.user_id = ?
-            ORDER BY t.timestamp DESC LIMIT ?
+            FROM transactions t JOIN accounts a ON t.account_number = a.account_number
+            WHERE a.user_id = ? ORDER BY t.timestamp DESC LIMIT ?
         ''', (user_id, limit))
         return self.cursor.fetchall()
 
     def get_all_users_with_balances(self):
         self.cursor.execute('''
             SELECT u.user_id, u.first_name, u.last_name, u.email, u.status, COALESCE(SUM(a.balance), 0)
-            FROM users u
-            LEFT JOIN accounts a ON u.user_id = a.user_id
-            WHERE u.role = 'customer'
-            GROUP BY u.user_id
+            FROM users u LEFT JOIN accounts a ON u.user_id = a.user_id WHERE u.role = 'customer' GROUP BY u.user_id
         ''')
         return self.cursor.fetchall()
 
@@ -437,8 +497,7 @@ class EnterpriseBankUI(ctk.CTk):
 
     def auto_logout(self):
         if self.active_user_data:
-            self.active_user_data = {}
-            self.active_accounts = {}
+            self.active_user_data = {}; self.active_accounts = {}
             self.show_auth_screen()
             self.show_toast("Session expired due to inactivity.", "error")
 
@@ -472,15 +531,10 @@ class EnterpriseBankUI(ctk.CTk):
             if user == "FROZEN":
                 self.show_toast("Account frozen. Contact support.", "error")
                 return
-
             if user:
                 role = user[5]
-                if mode == "Customer Access" and role == "admin":
-                    self.show_toast("System Admins must use the Staff Portal.", "error")
-                    return
-                if mode == "Staff Portal" and role != "admin":
-                    self.show_toast("Insufficient privileges for Staff Portal.", "error")
-                    return
+                if mode == "Customer Access" and role == "admin": return self.show_toast("System Admins must use the Staff Portal.", "error")
+                if mode == "Staff Portal" and role != "admin": return self.show_toast("Insufficient privileges for Staff Portal.", "error")
 
                 self.active_user_data = {"id": user[0], "name": f"{user[1]} {user[2]}", "email": user[3], "phone": user[4], "role": role}
                 self.reset_timeout()
@@ -559,8 +613,7 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkLabel(self.sidebar, text="NEXUS ADMIN", font=ctk.CTkFont(size=20, weight="bold"), text_color="#e74c3c").grid(row=0, column=0, padx=20, pady=(30, 30))
 
         nav_btns = [("Global Overview", self.view_admin_overview), ("Customer Directory", self.view_admin_users)]
-        for i, (text, command) in enumerate(nav_btns):
-            ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
+        for i, (text, command) in enumerate(nav_btns): ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
 
         def manual_logout():
             self.active_user_data = {}; self.show_auth_screen(); self.auth_mode_var.set("Staff Portal"); self.show_toast("Logged out of Admin.", "info")
@@ -650,7 +703,7 @@ class EnterpriseBankUI(ctk.CTk):
         for widget in self.content_area.winfo_children(): widget.destroy()
         u_info = self.backend.get_user_details(target_uid)
         if not u_info: return
-        usr, fn, ln, em, ph, stat, created = u_info
+        usr, fn, ln, em, ph, stat, c_score, created = u_info # Adjusted for credit score
 
         header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
@@ -665,10 +718,12 @@ class EnterpriseBankUI(ctk.CTk):
         profile_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         profile_card.grid(row=0, column=0, sticky="ew", pady=(0, 15), ipadx=15, ipady=15)
 
-        details = [("Username:", usr), ("Email:", em), ("Phone:", ph), ("Status:", stat.upper()), ("Created:", created.split(" ")[0])]
+        details = [("Username:", usr), ("Email:", em), ("Status:", stat.upper()), ("Credit Score:", str(c_score)), ("Created:", created.split(" ")[0])]
         for i, (lbl, val) in enumerate(details):
             ctk.CTkLabel(profile_card, text=lbl, text_color="gray", width=80, anchor="w").grid(row=0, column=i*2, padx=(10, 5), pady=5)
-            ctk.CTkLabel(profile_card, text=val, font=ctk.CTkFont(weight="bold")).grid(row=0, column=(i*2)+1, padx=(0, 20), pady=5)
+            c_color = "white"
+            if lbl == "Credit Score:": c_color = "#2ecc71" if int(val) >= 700 else "#f1c40f" if int(val) >= 600 else "#e74c3c"
+            ctk.CTkLabel(profile_card, text=val, text_color=c_color, font=ctk.CTkFont(weight="bold")).grid(row=0, column=(i*2)+1, padx=(0, 20), pady=5)
 
         accs = self.backend.get_user_accounts(target_uid)
         acc_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
@@ -695,8 +750,8 @@ class EnterpriseBankUI(ctk.CTk):
         for r, txn in enumerate(history):
             a_type, t_type, amt, bal_after, tgt, ts = txn
             fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
-            color = "#e74c3c" if t_type in ['Withdrawal', 'Transfer'] else "#2ecc71"
-            prefix = "-" if t_type in ['Withdrawal', 'Transfer'] else "+"
+            color = "#e74c3c" if t_type in ['Withdrawal', 'Transfer', 'Vault Funding'] else "#2ecc71"
+            prefix = "-" if t_type in ['Withdrawal', 'Transfer', 'Vault Funding'] else "+"
 
             ctk.CTkLabel(scroll, text=a_type, text_color="gray").grid(row=r+1, column=0, padx=10, pady=2, sticky="w")
             ctk.CTkLabel(scroll, text=t_type).grid(row=r+1, column=1, padx=10, pady=2, sticky="w")
@@ -712,7 +767,7 @@ class EnterpriseBankUI(ctk.CTk):
         self.clear_screen()
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(9, weight=1)
+        self.sidebar.grid_rowconfigure(10, weight=1)
 
         ctk.CTkLabel(self.sidebar, text="NEXUS", font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").grid(row=0, column=0, padx=20, pady=(30, 30))
 
@@ -720,6 +775,7 @@ class EnterpriseBankUI(ctk.CTk):
             ("Dashboard", self.view_dashboard),
             ("Operations", self.view_transfers),
             ("Cards", self.view_cards),
+            ("Savings Vaults", self.view_vaults), # NEW VISUAL FEATURE
             ("Wealth (FDs)", self.view_wealth),
             ("Credit Services", self.view_credit),
             ("Analytics", self.view_analytics),
@@ -733,7 +789,7 @@ class EnterpriseBankUI(ctk.CTk):
         def manual_logout():
             self.active_user_data = {}; self.show_auth_screen(); self.show_toast("Successfully logged out.", "info")
 
-        ctk.CTkButton(self.sidebar, text="Sign Out", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=10, column=0, padx=20, pady=20, sticky="ew")
+        ctk.CTkButton(self.sidebar, text="Sign Out", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=11, column=0, padx=20, pady=20, sticky="ew")
 
         self.content_area = ctk.CTkFrame(self, fg_color="transparent")
         self.content_area.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
@@ -759,6 +815,7 @@ class EnterpriseBankUI(ctk.CTk):
     def view_dashboard(self):
         container = self.set_content(f"Welcome, {self.active_user_data['name'].split()[0]}")
         total_bal = sum(acc['bal'] for acc in self.active_accounts.values())
+        score = self.backend.get_credit_score(self.active_user_data["id"])
 
         metric_frame = ctk.CTkFrame(container, fg_color="transparent")
         metric_frame.pack(fill="x", pady=(0, 20))
@@ -772,6 +829,10 @@ class EnterpriseBankUI(ctk.CTk):
         create_metric_card(metric_frame, "Total Assets", f"₹{total_bal:,.2f}", "#2ecc71")
         create_metric_card(metric_frame, "Active Accounts", str(len(self.active_accounts)), "#DCE4EE")
 
+        # Credit Score Gauge
+        s_color = "#2ecc71" if score >= 750 else "#f1c40f" if score >= 650 else "#e74c3c"
+        create_metric_card(metric_frame, "Credit Score", str(score), s_color)
+
         ctk.CTkLabel(container, text="Your Accounts", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", pady=(20, 10))
         for type_name, data in self.active_accounts.items():
             row = ctk.CTkFrame(container, fg_color=("gray80", "gray15"), corner_radius=8)
@@ -780,159 +841,82 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    def view_cards(self):
-        container = self.set_content("Virtual Card Management")
+    # --- NEW VISUAL VIEW: Savings Vaults ---
+    def view_vaults(self):
+        container = self.set_content("Savings Vaults")
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
 
-        card_data = self.backend.get_card(self.active_user_data["id"])
-        if not card_data:
-            ctk.CTkLabel(container, text="No active cards linked to your account.").pack(pady=50)
-            return
+        scroll = ctk.CTkScrollableFrame(container, fg_color="transparent")
+        scroll.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
-        c_id, c_num, c_exp, c_cvv, c_stat = card_data
+        vaults = self.backend.get_vaults(self.active_user_data["id"])
 
-        wrapper = ctk.CTkFrame(container, fg_color="transparent")
-        wrapper.grid(row=0, column=0, sticky="")
-
-        card_bg = "#34495E" if c_stat == 'active' else "#7f8c8d"
-        card_graphic = ctk.CTkFrame(wrapper, fg_color=card_bg, corner_radius=15, width=450, height=280)
-        card_graphic.pack(pady=(0, 30))
-        card_graphic.pack_propagate(False)
-
-        ctk.CTkLabel(card_graphic, text="NEXUS DEBIT", font=ctk.CTkFont(size=20, weight="bold"), text_color="#ecf0f1").place(x=25, y=25)
-        ctk.CTkLabel(card_graphic, text="Virtual Checking", text_color="#bdc3c7").place(x=25, y=55)
-
-        self.card_hidden = True
-        masked_num = f"**** **** **** {c_num[-4:]}"
-        num_label = ctk.CTkLabel(card_graphic, text=masked_num, font=ctk.CTkFont(size=26, weight="bold"), text_color="white")
-        num_label.place(x=25, y=120)
-
-        ctk.CTkLabel(card_graphic, text="VALID THRU", text_color="#bdc3c7", font=ctk.CTkFont(size=10)).place(x=25, y=190)
-        ctk.CTkLabel(card_graphic, text=c_exp, text_color="white", font=ctk.CTkFont(size=16, weight="bold")).place(x=25, y=210)
-
-        ctk.CTkLabel(card_graphic, text="CVV", text_color="#bdc3c7", font=ctk.CTkFont(size=10)).place(x=120, y=190)
-        cvv_label = ctk.CTkLabel(card_graphic, text="***", text_color="white", font=ctk.CTkFont(size=16, weight="bold"))
-        cvv_label.place(x=120, y=210)
-
-        ctk.CTkLabel(card_graphic, text=self.active_user_data['name'].upper(), text_color="white", font=ctk.CTkFont(size=18)).place(x=25, y=240)
-
-        controls = ctk.CTkFrame(wrapper, fg_color="transparent")
-        controls.pack(fill="x")
-
-        def toggle_visibility():
-            if self.card_hidden:
-                num_label.configure(text=c_num)
-                cvv_label.configure(text=c_cvv)
-                reveal_btn.configure(text="Hide Details")
-            else:
-                num_label.configure(text=masked_num)
-                cvv_label.configure(text="***")
-                reveal_btn.configure(text="Reveal Details")
-            self.card_hidden = not self.card_hidden
-
-        def toggle_freeze():
-            new_stat = self.backend.toggle_card(c_id, c_stat)
-            self.show_toast(f"Card is now {new_stat.upper()}.", "success")
-            self.view_cards()
-
-        btn_state = "normal" if c_stat == 'active' else "disabled"
-        reveal_btn = ctk.CTkButton(controls, text="Reveal Details", width=200, height=40, border_width=1, fg_color="transparent", state=btn_state, command=toggle_visibility)
-        reveal_btn.pack(side="left", padx=10)
-
-        freeze_text = "Freeze Card" if c_stat == 'active' else "Unfreeze Card"
-        freeze_color = "#e74c3c" if c_stat == 'active' else "#2ecc71"
-        ctk.CTkButton(controls, text=freeze_text, width=200, height=40, fg_color=freeze_color, command=toggle_freeze).pack(side="right", padx=10)
-
-        if c_stat == 'frozen':
-            ctk.CTkLabel(wrapper, text="WARNING: Your card is frozen. Account withdrawals are blocked.", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).pack(pady=20)
-
-    # --- UPGRADED VIEW: Fixed Deposits (Wealth) ---
-    def view_wealth(self):
-        container = self.set_content("Wealth & Fixed Deposits")
-        container.grid_rowconfigure(1, weight=1)
-        container.grid_columnconfigure(0, weight=1)
-
-        ledger_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
-        ledger_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20), ipadx=15, ipady=15)
-
-        ctk.CTkLabel(ledger_frame, text="Active Fixed Deposits", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 10))
-
-        fds = self.backend.get_fixed_deposits(self.active_user_data["id"])
-        if not fds:
-            ctk.CTkLabel(ledger_frame, text="You have no active Fixed Deposits.", text_color="gray").pack(pady=10)
+        if not vaults:
+            ctk.CTkLabel(scroll, text="You have no active Savings Vaults.", text_color="gray").pack(pady=30)
         else:
-            scroll = ctk.CTkScrollableFrame(ledger_frame, fg_color="transparent", height=150)
-            scroll.pack(fill="x", expand=True)
+            def manage_v(v_id, action):
+                amt = simpledialog.askfloat("Manage Vault", f"Enter amount to {action}:")
+                if amt and amt > 0:
+                    success, msg = self.backend.manage_vault(self.active_user_data["id"], v_id, amt, action)
+                    if success:
+                        self.show_toast(msg, "success")
+                        self.view_vaults()
+                    else: self.show_toast(msg, "error")
 
-            headers = ["FD ID", "Linked Account", "Principal", "Interest", "Maturity", "Action"]
-            for i, h in enumerate(headers): ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=5, sticky="w")
+            for v in vaults:
+                v_id, name, tgt, cur, stat = v
+                card = ctk.CTkFrame(scroll, fg_color=("gray85", "gray12"), corner_radius=15)
+                card.pack(fill="x", pady=10, ipadx=20, ipady=15)
 
-            def break_deposit(fd_id):
-                success, msg = self.backend.break_fd(self.active_user_data["id"], fd_id)
-                if success:
-                    self.show_toast(msg, "info")
-                    self.view_wealth()
+                header = ctk.CTkFrame(card, fg_color="transparent")
+                header.pack(fill="x")
+                ctk.CTkLabel(header, text=name, font=ctk.CTkFont(size=18, weight="bold")).pack(side="left")
+
+                pct = (cur / tgt) if tgt > 0 else 0
+                pct_text = f"{int(pct * 100)}%"
+                color = "#2ecc71" if pct >= 1.0 else "#3498db"
+
+                ctk.CTkLabel(header, text=f"₹{cur:,.0f} / ₹{tgt:,.0f} ({pct_text})", text_color=color, font=ctk.CTkFont(weight="bold")).pack(side="right")
+
+                progress = ctk.CTkProgressBar(card, progress_color=color, height=12)
+                progress.pack(fill="x", pady=15)
+                progress.set(min(1.0, pct))
+
+                controls = ctk.CTkFrame(card, fg_color="transparent")
+                controls.pack(fill="x")
+
+                if stat == 'active':
+                    ctk.CTkButton(controls, text="Add Funds", width=100, command=lambda x=v_id: manage_v(x, "fund")).pack(side="left", padx=(0,10))
                 else:
-                    self.show_toast(msg, "error")
+                    ctk.CTkLabel(controls, text="Goal Reached! 🎉", text_color="#f1c40f", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(0,10))
 
-            for r, fd in enumerate(fds):
-                f_id, prin, rate, mat_date, stat, link_acc = fd
-                fmt_date = datetime.strptime(mat_date, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %Y')
+                ctk.CTkButton(controls, text="Withdraw", width=100, fg_color="transparent", border_width=1, command=lambda x=v_id: manage_v(x, "withdraw")).pack(side="right")
 
-                acc_name = "Unknown"
-                for name, data in self.active_accounts.items():
-                    if data["id"] == link_acc: acc_name = name
+        # Creation Form
+        create_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        create_frame.grid(row=1, column=0, sticky="ew", ipadx=15, ipady=15)
 
-                ctk.CTkLabel(scroll, text=f"FD-{f_id}").grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
-                ctk.CTkLabel(scroll, text=f"{acc_name}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
-                ctk.CTkLabel(scroll, text=f"₹{prin:,.2f}").grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
-                ctk.CTkLabel(scroll, text=f"{rate*100}%", text_color="#2ecc71", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
-                ctk.CTkLabel(scroll, text=fmt_date).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
-                ctk.CTkButton(scroll, text="Break Early", width=80, fg_color="#e74c3c", command=lambda x=f_id: break_deposit(x)).grid(row=r+1, column=5, padx=15, pady=5, sticky="w")
+        ctk.CTkLabel(create_frame, text="Create New Vault", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=10, pady=(0, 10))
+        form = ctk.CTkFrame(create_frame, fg_color="transparent")
+        form.pack(fill="x", padx=10)
 
-        app_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
-        app_frame.grid(row=1, column=0, sticky="nsew", ipadx=15, ipady=15)
+        name_entry = ctk.CTkEntry(form, placeholder_text="Goal Name (e.g. New Laptop)", width=300)
+        name_entry.pack(side="left", padx=(0, 10))
+        tgt_entry = ctk.CTkEntry(form, placeholder_text="Target Amount (₹)", width=200)
+        tgt_entry.pack(side="left", padx=(0, 10))
 
-        ctk.CTkLabel(app_frame, text="Open New Fixed Deposit", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 15))
-
-        form_grid = ctk.CTkFrame(app_frame, fg_color="transparent")
-        form_grid.pack(anchor="w", padx=10)
-
-        ctk.CTkLabel(form_grid, text="Source Account:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5))
-        acc_options = [f"{name} ({data['id']})" for name, data in self.active_accounts.items()]
-        source_sel = ctk.CTkOptionMenu(form_grid, values=acc_options, width=220, height=40)
-        source_sel.grid(row=1, column=0, sticky="w", padx=(0, 15))
-
-        ctk.CTkLabel(form_grid, text="Investment Amount (₹):", font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, sticky="w", pady=(10, 5))
-        amount_entry = ctk.CTkEntry(form_grid, placeholder_text="e.g., 10000", width=220, height=40)
-        amount_entry.grid(row=1, column=1, sticky="w", padx=(0, 15))
-
-        ctk.CTkLabel(form_grid, text="Lock-in Duration:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=2, sticky="w", pady=(10, 5))
-        dur_var = ctk.StringVar(value="6 Months (5%)")
-        dur_menu = ctk.CTkOptionMenu(form_grid, values=["3 Months (5%)", "6 Months (5%)", "12 Months (7.5%)"], variable=dur_var, width=200, height=40)
-        dur_menu.grid(row=1, column=2, sticky="w")
-
-        ctk.CTkLabel(form_grid, text="Note: Funds will be deducted from your selected account. Breaking early forfeits all interest.", text_color="gray").grid(row=2, column=0, columnspan=3, sticky="w", pady=(20, 5))
-
-        def submit_fd():
+        def new_vault():
+            name = name_entry.get().strip()
             try:
-                src_id = self.active_accounts[source_sel.get().split(" (")[0]]["id"]
-                amt = float(amount_entry.get())
-                if amt < 500: raise ValueError("Minimum deposit is ₹500.")
-                months = int(dur_var.get().split(" ")[0])
+                tgt = float(tgt_entry.get())
+                if not name or tgt <= 0: raise ValueError("Invalid input.")
+                success, msg = self.backend.create_vault(self.active_user_data["id"], name, tgt)
+                self.show_toast(msg, "success" if success else "error")
+                self.view_vaults()
+            except ValueError: self.show_toast("Please enter a valid target amount.", "error")
 
-                success, msg = self.backend.open_fd(self.active_user_data["id"], src_id, amt, months)
-                if success:
-                    self.show_toast(msg, "success")
-                    self.view_wealth()
-                else:
-                    self.show_toast(msg, "error")
-            except ValueError as e:
-                err_msg = str(e) if "could not convert" not in str(e) else str(e)
-                self.show_toast(err_msg, "error")
-
-        ctk.CTkButton(app_frame, text="Lock Deposit", font=ctk.CTkFont(weight="bold"), height=40, width=250, fg_color="#2ecc71", command=submit_fd).pack(anchor="w", padx=10, pady=(30, 0))
+        ctk.CTkButton(form, text="Create Vault", command=new_vault).pack(side="left")
 
     def view_transfers(self):
         container = self.set_content("Operations Hub")
@@ -1066,6 +1050,139 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
+    def view_cards(self):
+        container = self.set_content("Virtual Card Management")
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+
+        card_data = self.backend.get_card(self.active_user_data["id"])
+        if not card_data: return ctk.CTkLabel(container, text="No active cards.").pack(pady=50)
+
+        c_id, c_num, c_exp, c_cvv, c_stat = card_data
+        wrapper = ctk.CTkFrame(container, fg_color="transparent")
+        wrapper.grid(row=0, column=0, sticky="")
+
+        card_bg = "#34495E" if c_stat == 'active' else "#7f8c8d"
+        card_graphic = ctk.CTkFrame(wrapper, fg_color=card_bg, corner_radius=15, width=450, height=280)
+        card_graphic.pack(pady=(0, 30))
+        card_graphic.pack_propagate(False)
+
+        ctk.CTkLabel(card_graphic, text="NEXUS DEBIT", font=ctk.CTkFont(size=20, weight="bold"), text_color="#ecf0f1").place(x=25, y=25)
+        ctk.CTkLabel(card_graphic, text="Virtual Checking", text_color="#bdc3c7").place(x=25, y=55)
+
+        self.card_hidden = True
+        masked_num = f"**** **** **** {c_num[-4:]}"
+        num_label = ctk.CTkLabel(card_graphic, text=masked_num, font=ctk.CTkFont(size=26, weight="bold"), text_color="white")
+        num_label.place(x=25, y=120)
+
+        ctk.CTkLabel(card_graphic, text="VALID THRU", text_color="#bdc3c7", font=ctk.CTkFont(size=10)).place(x=25, y=190)
+        ctk.CTkLabel(card_graphic, text=c_exp, text_color="white", font=ctk.CTkFont(size=16, weight="bold")).place(x=25, y=210)
+
+        ctk.CTkLabel(card_graphic, text="CVV", text_color="#bdc3c7", font=ctk.CTkFont(size=10)).place(x=120, y=190)
+        cvv_label = ctk.CTkLabel(card_graphic, text="***", text_color="white", font=ctk.CTkFont(size=16, weight="bold"))
+        cvv_label.place(x=120, y=210)
+
+        ctk.CTkLabel(card_graphic, text=self.active_user_data['name'].upper(), text_color="white", font=ctk.CTkFont(size=18)).place(x=25, y=240)
+
+        controls = ctk.CTkFrame(wrapper, fg_color="transparent")
+        controls.pack(fill="x")
+
+        def toggle_visibility():
+            if self.card_hidden: num_label.configure(text=c_num); cvv_label.configure(text=c_cvv); reveal_btn.configure(text="Hide Details")
+            else: num_label.configure(text=masked_num); cvv_label.configure(text="***"); reveal_btn.configure(text="Reveal Details")
+            self.card_hidden = not self.card_hidden
+
+        def toggle_freeze():
+            new_stat = self.backend.toggle_card(c_id, c_stat)
+            self.show_toast(f"Card is now {new_stat.upper()}.", "success")
+            self.view_cards()
+
+        btn_state = "normal" if c_stat == 'active' else "disabled"
+        reveal_btn = ctk.CTkButton(controls, text="Reveal Details", width=200, height=40, border_width=1, fg_color="transparent", state=btn_state, command=toggle_visibility)
+        reveal_btn.pack(side="left", padx=10)
+        freeze_color = "#e74c3c" if c_stat == 'active' else "#2ecc71"
+        ctk.CTkButton(controls, text="Freeze Card" if c_stat == 'active' else "Unfreeze Card", width=200, height=40, fg_color=freeze_color, command=toggle_freeze).pack(side="right", padx=10)
+
+        if c_stat == 'frozen': ctk.CTkLabel(wrapper, text="WARNING: Your card is frozen. Account withdrawals are blocked.", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).pack(pady=20)
+
+    def view_wealth(self):
+        container = self.set_content("Wealth & Fixed Deposits")
+        container.grid_rowconfigure(1, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+
+        ledger_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        ledger_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20), ipadx=15, ipady=15)
+        ctk.CTkLabel(ledger_frame, text="Active Fixed Deposits", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 10))
+
+        fds = self.backend.get_fixed_deposits(self.active_user_data["id"])
+        if not fds:
+            ctk.CTkLabel(ledger_frame, text="You have no active Fixed Deposits.", text_color="gray").pack(pady=10)
+        else:
+            scroll = ctk.CTkScrollableFrame(ledger_frame, fg_color="transparent", height=150)
+            scroll.pack(fill="x", expand=True)
+            headers = ["FD ID", "Linked Account", "Principal", "Interest", "Maturity", "Action"]
+            for i, h in enumerate(headers): ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=5, sticky="w")
+
+            def break_deposit(fd_id):
+                success, msg = self.backend.break_fd(self.active_user_data["id"], fd_id)
+                self.show_toast(msg, "info" if success else "error")
+                if success: self.view_wealth()
+
+            for r, fd in enumerate(fds):
+                f_id, prin, rate, mat_date, stat, link_acc = fd
+                fmt_date = datetime.strptime(mat_date, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %Y')
+                acc_name = "Unknown"
+                for name, data in self.active_accounts.items():
+                    if data["id"] == link_acc: acc_name = name
+
+                ctk.CTkLabel(scroll, text=f"FD-{f_id}").grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"{acc_name}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"₹{prin:,.2f}").grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"{rate*100}%", text_color="#2ecc71", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=fmt_date).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+                ctk.CTkButton(scroll, text="Break Early", width=80, fg_color="#e74c3c", command=lambda x=f_id: break_deposit(x)).grid(row=r+1, column=5, padx=15, pady=5, sticky="w")
+
+        app_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
+        app_frame.grid(row=1, column=0, sticky="nsew", ipadx=15, ipady=15)
+        ctk.CTkLabel(app_frame, text="Open New Fixed Deposit", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=10, pady=(0, 15))
+        form_grid = ctk.CTkFrame(app_frame, fg_color="transparent")
+        form_grid.pack(anchor="w", padx=10)
+
+        ctk.CTkLabel(form_grid, text="Source Account:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5))
+        acc_options = [f"{name} ({data['id']})" for name, data in self.active_accounts.items()]
+        source_sel = ctk.CTkOptionMenu(form_grid, values=acc_options, width=220, height=40)
+        source_sel.grid(row=1, column=0, sticky="w", padx=(0, 15))
+
+        ctk.CTkLabel(form_grid, text="Investment Amount (₹):", font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, sticky="w", pady=(10, 5))
+        amount_entry = ctk.CTkEntry(form_grid, placeholder_text="e.g., 10000", width=220, height=40)
+        amount_entry.grid(row=1, column=1, sticky="w", padx=(0, 15))
+
+        ctk.CTkLabel(form_grid, text="Lock-in Duration:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=2, sticky="w", pady=(10, 5))
+        dur_var = ctk.StringVar(value="6 Months (5%)")
+        dur_menu = ctk.CTkOptionMenu(form_grid, values=["3 Months (5%)", "6 Months (5%)", "12 Months (7.5%)"], variable=dur_var, width=200, height=40)
+        dur_menu.grid(row=1, column=2, sticky="w")
+
+        ctk.CTkLabel(form_grid, text="Note: Funds will be deducted from your selected account. Breaking early forfeits all interest.", text_color="gray").grid(row=2, column=0, columnspan=3, sticky="w", pady=(20, 5))
+
+        def submit_fd():
+            try:
+                src_id = self.active_accounts[source_sel.get().split(" (")[0]]["id"]
+                amt = float(amount_entry.get())
+                if amt < 500: raise ValueError("Minimum deposit is ₹500.")
+                months = int(dur_var.get().split(" ")[0])
+
+                success, msg = self.backend.open_fd(self.active_user_data["id"], src_id, amt, months)
+                if success:
+                    self.show_toast(msg, "success")
+                    self.view_wealth()
+                else: self.show_toast(msg, "error")
+            except ValueError as e:
+                err_msg = str(e) if "could not convert" not in str(e) else str(e)
+                self.show_toast(err_msg, "error")
+
+        ctk.CTkButton(app_frame, text="Lock Deposit", font=ctk.CTkFont(weight="bold"), height=40, width=250, fg_color="#2ecc71", command=submit_fd).pack(anchor="w", padx=10, pady=(30, 0))
+
+    # --- UPGRADED VIEW: Credit Services (Dynamic Gamified Rates) ---
     def view_credit(self):
         container = self.set_content("Credit Services")
         container.grid_rowconfigure(1, weight=1)
@@ -1086,11 +1203,8 @@ class EnterpriseBankUI(ctk.CTk):
 
             def process_payment(loan_id):
                 success, msg = self.backend.process_emi(self.active_user_data["id"], loan_id)
-                if success:
-                    self.show_toast("EMI Payment Deducted.", "success")
-                    self.view_credit()
-                else:
-                    self.show_toast(msg, "error")
+                self.show_toast(msg, "success" if success else "error")
+                if success: self.view_credit()
 
             for r, loan in enumerate(loans):
                 l_id, prin, rate, tenure, emi, rem, date = loan
@@ -1099,6 +1213,9 @@ class EnterpriseBankUI(ctk.CTk):
                 ctk.CTkLabel(scroll, text=f"₹{emi:,.2f}", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
                 ctk.CTkLabel(scroll, text=f"₹{rem:,.2f}").grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
                 ctk.CTkButton(scroll, text="Pay EMI", width=80, command=lambda x=l_id: process_payment(x)).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+
+        # Dynamic Rate Check
+        u_rate = self.backend.get_dynamic_rate(self.active_user_data["id"])
 
         app_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         app_frame.grid(row=1, column=0, sticky="nsew", ipadx=15, ipady=15)
@@ -1118,13 +1235,15 @@ class EnterpriseBankUI(ctk.CTk):
 
         preview_label = ctk.CTkLabel(form_grid, text="Estimated EMI: ₹0.00 / month", font=ctk.CTkFont(size=16, weight="bold"), text_color="#3498db")
         preview_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(20, 5))
-        ctk.CTkLabel(form_grid, text=f"Fixed Annual Percentage Rate (APR): {self.backend.annual_interest_rate * 100}%", text_color="gray").grid(row=3, column=0, columnspan=2, sticky="w")
+
+        color = "#2ecc71" if u_rate <= 0.085 else "#e74c3c"
+        ctk.CTkLabel(form_grid, text=f"Your Custom Dynamic Rate (APR): {u_rate * 100}%", text_color=color).grid(row=3, column=0, columnspan=2, sticky="w")
 
         def update_preview(*args):
             try:
                 amt = float(amount_entry.get())
                 if amt > 0:
-                    emi = self.backend.calculate_emi(amt, int(tenure_var.get()))
+                    emi = self.backend.calculate_emi(amt, int(tenure_var.get()), u_rate)
                     preview_label.configure(text=f"Estimated EMI: ₹{emi:,.2f} / month")
                 else: preview_label.configure(text="Estimated EMI: ₹0.00 / month")
             except ValueError: preview_label.configure(text="Estimated EMI: ₹0.00 / month")
@@ -1239,8 +1358,8 @@ class EnterpriseBankUI(ctk.CTk):
         for r, txn in enumerate(logs):
             txn_type, amt, bal_after, target, ts = txn
             fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
-            color = "#e74c3c" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation'] else "#2ecc71"
-            prefix = "-" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation'] else "+"
+            color = "#e74c3c" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation', 'Vault Funding'] else "#2ecc71"
+            prefix = "-" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation', 'Vault Funding'] else "+"
 
             ctk.CTkLabel(self.ledger_frame, text=txn_type).grid(row=r+1, column=0, padx=20, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=fmt_date, text_color="gray").grid(row=r+1, column=1, padx=20, pady=5, sticky="w")
@@ -1277,7 +1396,7 @@ class EnterpriseBankUI(ctk.CTk):
             for txn in logs:
                 txn_type, amt, bal_after, target, ts = txn
                 fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
-                prefix = "-" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation'] else "+"
+                prefix = "-" if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation', 'Vault Funding'] else "+"
                 pdf.cell(35, 10, fmt_date, 1); pdf.cell(30, 10, txn_type, 1); pdf.cell(40, 10, str(target) if target else "-", 1); pdf.cell(40, 10, f"{prefix}{amt:,.2f}", 1); pdf.cell(45, 10, f"{bal_after:,.2f}", 1); pdf.ln()
 
             pdf.output(file_path)

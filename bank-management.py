@@ -182,7 +182,6 @@ class BankCore:
 
     # --- Credit & Loan Engine ---
     def calculate_emi(self, principal, tenure_months):
-        """Calculates EMI using standard amortization formula."""
         r_monthly = self.annual_interest_rate / 12
         emi = principal * r_monthly * ((1 + r_monthly) ** tenure_months) / (((1 + r_monthly) ** tenure_months) - 1)
         return round(emi, 2)
@@ -193,19 +192,16 @@ class BankCore:
             emi = self.calculate_emi(principal, tenure_months)
             total_payable = emi * tenure_months
 
-            # Find user's checking account to disburse funds
             self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
             chk_data = self.cursor.fetchone()
             if not chk_data: raise ValueError("Requires a Checking account to receive funds.")
             chk_acc, chk_bal = chk_data
 
-            # 1. Create the loan record
             self.cursor.execute('''
                 INSERT INTO loans (user_id, principal, interest_rate, tenure_months, emi_amount, balance_remaining)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, principal, self.annual_interest_rate, tenure_months, emi, total_payable))
 
-            # 2. Disburse funds to checking
             new_bal = chk_bal + principal
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, chk_acc))
             self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)",
@@ -224,28 +220,23 @@ class BankCore:
     def process_emi(self, user_id, loan_id):
         try:
             self.conn.execute("BEGIN TRANSACTION")
-
-            # Get loan details
             self.cursor.execute("SELECT emi_amount, balance_remaining FROM loans WHERE loan_id=? AND status='active'", (loan_id,))
             loan_data = self.cursor.fetchone()
             if not loan_data: raise ValueError("Loan not found or already paid off.")
             emi, rem_bal = loan_data
 
-            # Get Checking account for deduction
             self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
             chk_acc, chk_bal = self.cursor.fetchone()
 
             if chk_bal < emi: raise ValueError("Insufficient funds in Checking for EMI payment.")
 
-            # Deduct from checking
             new_chk_bal = chk_bal - emi
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_chk_bal, chk_acc))
             self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
                                 (chk_acc, 'EMI Payment', emi, new_chk_bal, loan_id))
 
-            # Update loan balance
             new_rem_bal = round(rem_bal - emi, 2)
-            if new_rem_bal <= 0.05: # Float math safety buffer
+            if new_rem_bal <= 0.05:
                 self.cursor.execute("UPDATE loans SET balance_remaining = 0, status = 'paid' WHERE loan_id=?", (loan_id,))
             else:
                 self.cursor.execute("UPDATE loans SET balance_remaining = ? WHERE loan_id=?", (new_rem_bal, loan_id))
@@ -525,7 +516,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         controls_frame = ctk.CTkFrame(container, fg_color="transparent")
         controls_frame.pack(fill="x", pady=(0, 10))
-
         ctk.CTkButton(controls_frame, text="Export CSV Report", command=self._export_admin_csv,
                       fg_color="#2ecc71", hover_color="#27ae60", width=150).pack(side="right")
 
@@ -556,7 +546,6 @@ class EnterpriseBankUI(ctk.CTk):
 
             action_frame = ctk.CTkFrame(list_frame, fg_color="transparent")
             action_frame.grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
-
             ctk.CTkButton(action_frame, text="Inspect", width=70, fg_color="#3498db", hover_color="#2980b9", command=lambda x=uid: self.view_admin_inspector(x)).pack(side="left", padx=(0, 5))
             ctk.CTkButton(action_frame, text=btn_txt, width=70, fg_color=btn_col, command=lambda x=uid, y=stat: toggle_status(x, y)).pack(side="left")
 
@@ -652,7 +641,7 @@ class EnterpriseBankUI(ctk.CTk):
         nav_btns = [
             ("Dashboard", self.view_dashboard),
             ("Operations", self.view_transfers),
-            ("Credit Services", self.view_credit), # NEW LOAN TAB
+            ("Credit Services", self.view_credit),
             ("Analytics", self.view_analytics),
             ("Statements", self.view_history),
             ("Preferences", self.view_settings)
@@ -770,6 +759,7 @@ class EnterpriseBankUI(ctk.CTk):
                 if not tgt.isdigit():
                     status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
                     return
+
                 existing_bens = [b[1] for b in self.backend.get_beneficiaries(self.active_user_data["id"])]
                 if int(tgt) in existing_bens:
                     status_label.configure(text="Account already exists in Address Book.", text_color="#e74c3c")
@@ -860,13 +850,11 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
-    # --- NEW VIEW: Credit Services (Loans & EMI) ---
     def view_credit(self):
         container = self.set_content("Credit Services")
         container.grid_rowconfigure(1, weight=1)
         container.grid_columnconfigure(0, weight=1)
 
-        # TOP HALF: Active Loans Ledger
         ledger_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         ledger_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20), ipadx=15, ipady=15)
 
@@ -888,7 +876,7 @@ class EnterpriseBankUI(ctk.CTk):
                 success, msg = self.backend.process_emi(self.active_user_data["id"], loan_id)
                 if success:
                     self.show_toast("EMI Payment Deducted Successfully.", "success")
-                    self.view_credit() # Refresh
+                    self.view_credit()
                 else:
                     self.show_toast(msg, "error")
 
@@ -900,7 +888,6 @@ class EnterpriseBankUI(ctk.CTk):
                 ctk.CTkLabel(scroll, text=f"₹{rem:,.2f}").grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
                 ctk.CTkButton(scroll, text="Pay EMI", width=80, command=lambda x=l_id: process_payment(x)).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
 
-        # BOTTOM HALF: Application Form
         app_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         app_frame.grid(row=1, column=0, sticky="nsew", ipadx=15, ipady=15)
 
@@ -924,7 +911,6 @@ class EnterpriseBankUI(ctk.CTk):
         disclaimer_label = ctk.CTkLabel(form_grid, text=f"Fixed Annual Percentage Rate (APR): {self.backend.annual_interest_rate * 100}%", text_color="gray")
         disclaimer_label.grid(row=3, column=0, columnspan=2, sticky="w")
 
-        # Dynamic Math Preview
         def update_preview(*args):
             try:
                 amt = float(amount_entry.get())
@@ -937,7 +923,7 @@ class EnterpriseBankUI(ctk.CTk):
                 preview_label.configure(text="Estimated EMI: ₹0.00 / month")
 
         amount_entry.bind("<KeyRelease>", update_preview)
-        tenure_var.trace_add("write", update_form_state)
+        tenure_var.trace_add("write", lambda *args: update_preview())
 
         def submit_application():
             try:
@@ -947,7 +933,7 @@ class EnterpriseBankUI(ctk.CTk):
                 success, msg = self.backend.apply_for_loan(self.active_user_data["id"], amt, int(tenure_var.get()))
                 if success:
                     self.show_toast(f"Approved! ₹{amt:,.2f} routed to Checking.", "success")
-                    self.view_credit() # Hard Refresh
+                    self.view_credit()
                 else:
                     self.show_toast(msg, "error")
             except ValueError as e:

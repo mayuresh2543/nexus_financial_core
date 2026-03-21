@@ -434,7 +434,7 @@ class EnterpriseBankUI(ctk.CTk):
     def view_admin_users(self):
         container = self.set_admin_content("Customer Directory")
 
-        # New Feature: Export CSV Button
+        # Export CSV Button
         controls_frame = ctk.CTkFrame(container, fg_color="transparent")
         controls_frame.pack(fill="x", pady=(0, 10))
 
@@ -446,14 +446,16 @@ class EnterpriseBankUI(ctk.CTk):
         list_frame = ctk.CTkScrollableFrame(container)
         list_frame.pack(fill="both", expand=True)
 
-        headers = ["ID", "Name", "Email Address", "Status", "Actions"]
+        # FIX 1: Changed "ID" to "#" for visual clarity
+        headers = ["#", "Name", "Email Address", "Status", "Actions"]
         for i, h in enumerate(headers):
             ctk.CTkLabel(list_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
 
         def toggle_status(uid, current_status):
             new_stat = "frozen" if current_status == "active" else "active"
             self.backend.toggle_user_status(uid, new_stat)
-            self.show_toast(f"User {uid} is now {new_stat}.", "info")
+            # Removed the raw ID from the toast to keep it clean
+            self.show_toast(f"Account is now {new_stat}.", "info")
             self.view_admin_users()
 
         for r, u in enumerate(users):
@@ -462,7 +464,8 @@ class EnterpriseBankUI(ctk.CTk):
             btn_txt = "Freeze" if stat == "active" else "Unfreeze"
             btn_col = "#e74c3c" if stat == "active" else "#2ecc71"
 
-            ctk.CTkLabel(list_frame, text=str(uid)).grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
+            # FIX 2: Replaced str(uid) with str(r+1) so the list always starts at 1
+            ctk.CTkLabel(list_frame, text=str(r+1)).grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(list_frame, text=f"{fn} {ln}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(list_frame, text=em, text_color="gray").grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(list_frame, text=stat.upper(), text_color=color, font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")

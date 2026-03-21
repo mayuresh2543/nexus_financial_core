@@ -306,12 +306,17 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- View 2: Unified Transfers ---
+    # --- View 2: Unified Transfers (Centered) ---
     def view_transfers(self):
         container, _ = self.set_content("Operations Hub")
 
+        # 1. Configure the container to perfectly dead-center the card
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+
+        # 2. Grid the card with sticky="" so it floats in the exact middle
         form_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=15)
-        form_card.pack(fill="y", expand=True, padx=40, pady=20, ipadx=40, ipady=20)
+        form_card.grid(row=0, column=0, sticky="", padx=40, pady=20, ipadx=40, ipady=20)
 
         ctk.CTkLabel(form_card, text="Select Transaction Type", text_color="gray", font=ctk.CTkFont(size=14)).pack(pady=(20, 10))
 
@@ -320,9 +325,11 @@ class EnterpriseBankUI(ctk.CTk):
                                               variable=self.txn_type_var, width=400, height=35)
         txn_selector.pack(pady=(0, 20))
 
+        # 3. Pack fields_frame without fill="x" so it stays exactly 400px wide and centers itself
         fields_frame = ctk.CTkFrame(form_card, fg_color="transparent")
-        fields_frame.pack(fill="x")
+        fields_frame.pack(pady=10)
 
+        # The labels and inputs stay nicely left-aligned relative to each other inside the centered 400px block
         ctk.CTkLabel(fields_frame, text="Source Account", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5))
 
         acc_options = [f"{name} ({data['id']})" for name, data in self.active_accounts.items()]

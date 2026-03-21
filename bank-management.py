@@ -13,7 +13,7 @@ from fpdf import FPDF
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v12.db"):
+    def __init__(self, db_name="enterprise_bank_v13.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -49,6 +49,7 @@ class BankCore:
                 target_amount REAL NOT NULL,
                 current_amount REAL DEFAULT 0.0,
                 status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
             CREATE TABLE IF NOT EXISTS cards (
@@ -71,6 +72,7 @@ class BankCore:
                 duration_months INTEGER NOT NULL,
                 maturity_date TIMESTAMP NOT NULL,
                 status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (linked_account) REFERENCES accounts(account_number)
             );
@@ -100,6 +102,7 @@ class BankCore:
                 emi_amount REAL NOT NULL,
                 balance_remaining REAL NOT NULL,
                 status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
         ''')

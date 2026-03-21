@@ -14,7 +14,7 @@ import math
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v16.db"):
+    def __init__(self, db_name="enterprise_bank_v18.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -205,7 +205,6 @@ class BankCore:
         if result: return f"{result[0]} {result[1][0]}."
         return None
 
-    # --- P2P Resolution & Live Search ---
     def resolve_username(self, username):
         clean_user = username.replace("@", "").strip()
         self.cursor.execute('''
@@ -219,7 +218,6 @@ class BankCore:
         return None, None
 
     def search_users_by_handle(self, query, limit=5):
-        """Live fuzzy-search for the autocomplete dropdown."""
         self.cursor.execute('''
             SELECT DISTINCT u.username, u.first_name, u.last_name
             FROM users u JOIN accounts a ON u.user_id = a.user_id
@@ -1097,11 +1095,30 @@ class EnterpriseBankUI(ctk.CTk):
         ben_list = ["-- New Manual Transfer --"] + [f"{b[0]} ({b[1]})" for b in bens]
         target_entry = ctk.CTkComboBox(fields_frame, values=ben_list, width=400, height=40)
 
+        # --- NATIVE PLACEHOLDER BEHAVIOR ---
+        p_text = "Select, type Account #, or @Username"
+        target_entry.set(p_text)
+        target_entry.configure(text_color="gray")
+
+        def clear_placeholder(event):
+            if target_entry.get() == p_text:
+                target_entry.set("")
+                target_entry.configure(text_color="white" if ctk.get_appearance_mode() == "Dark" else "black")
+
+        def restore_placeholder(event):
+            if not target_entry.get().strip():
+                target_entry.set(p_text)
+                target_entry.configure(text_color="gray")
+
+        target_entry._entry.bind("<FocusIn>", clear_placeholder)
+        target_entry._entry.bind("<FocusOut>", restore_placeholder)
+
         # --- LIVE P2P AUTOCOMPLETE ---
         suggestion_frame = ctk.CTkFrame(fields_frame, fg_color=("gray90", "gray15"), border_width=1, border_color="#3498db", corner_radius=5)
 
         def select_suggestion(username):
             target_entry.set(f"@{username}")
+            target_entry.configure(text_color="white" if ctk.get_appearance_mode() == "Dark" else "black")
             suggestion_frame.place_forget()
 
         def handle_typing(event):
@@ -1134,21 +1151,78 @@ class EnterpriseBankUI(ctk.CTk):
         amt_entry = ctk.CTkEntry(fields_frame, placeholder_text="0.00", width=400, height=40, font=ctk.CTkFont(size=18))
         amt_entry.grid(row=7, column=0, sticky="w", pady=(0, 20))
 
+        def open_beneficiary_manager():
+            modal = ctk.CTkToplevel(self)
+            modal.title("Address Book Manager")
+            modal.geometry("450x350")
+            modal.resizable(False, False)
+            modal.attributes("-topmost", True)
+            modal.grab_set()
+
+            ctk.CTkLabel(modal, text="Add Trusted Beneficiary", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 10))
+            acc_entry = ctk.CTkEntry(modal, placeholder_text="Enter Account Number", width=300)
+            acc_entry.pack(pady=10)
+            status_label = ctk.CTkLabel(modal, text="", text_color="gray")
+            status_label.pack()
+
+            verified_name = ctk.StringVar(value="")
+
+            def verify():
+                tgt = acc_entry.get().strip()
+                if not tgt.isdigit(): return status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
+                existing_bens = [b[1] for b in self.backend.get_beneficiaries(self.active_user_data["id"])]
+                if int(tgt) in existing_bens:
+                    status_label.configure(text="Account already in Address Book.", text_color="#e74c3c")
+                    nick_entry.configure(state="disabled"); save_btn.configure(state="disabled")
+                    return
+
+                name = self.backend.verify_account(int(tgt))
+                if name:
+                    status_label.configure(text=f"Verified Owner: {name}", text_color="#2ecc71")
+                    verified_name.set(name)
+                    nick_entry.configure(state="normal"); save_btn.configure(state="normal")
+                else:
+                    status_label.configure(text="Account not found.", text_color="#e74c3c")
+                    nick_entry.configure(state="disabled"); save_btn.configure(state="disabled")
+
+            ctk.CTkButton(modal, text="Verify Account", fg_color="transparent", border_width=1, command=verify).pack(pady=5)
+            nick_entry = ctk.CTkEntry(modal, placeholder_text="Assign Nickname (e.g. Landlord)", width=300, state="disabled")
+            nick_entry.pack(pady=10)
+
+            def save_ben():
+                tgt = int(acc_entry.get().strip())
+                nick = nick_entry.get().strip()
+                if not nick: nick = verified_name.get()
+                self.backend.add_beneficiary(self.active_user_data["id"], nick, tgt)
+                self.show_toast(f"Saved {nick} to Address Book.", "success")
+                modal.destroy()
+                self.view_transfers()
+
+            save_btn = ctk.CTkButton(modal, text="Save Beneficiary", command=save_ben, state="disabled")
+            save_btn.pack(pady=15)
+
+        manage_btn = ctk.CTkButton(target_header_frame, text="Manage Contacts", width=120, height=28, fg_color="transparent", border_width=1, command=open_beneficiary_manager)
+
         def update_form_state(*args):
             suggestion_frame.place_forget()
             if self.txn_type_var.get() == "Transfer":
                 target_header_frame.grid(row=2, column=0, sticky="ew", pady=(10, 5))
+                manage_btn.pack(side="right")
                 target_entry.grid(row=3, column=0, sticky="w", pady=(0, 15))
-                target_entry.set("Select, type Account #, or @Username")
+                if not target_entry.get().strip() or target_entry.get() == p_text:
+                    target_entry.set(p_text)
+                    target_entry.configure(text_color="gray")
                 cat_label.grid(row=4, column=0, sticky="w", pady=(10,5))
                 cat_sel.grid(row=5, column=0, sticky="w", pady=(0, 15))
             elif self.txn_type_var.get() == "Withdraw":
                 target_header_frame.grid_remove()
+                manage_btn.pack_forget()
                 target_entry.grid_remove()
                 cat_label.grid(row=4, column=0, sticky="w", pady=(10,5))
                 cat_sel.grid(row=5, column=0, sticky="w", pady=(0, 15))
             else:
                 target_header_frame.grid_remove()
+                manage_btn.pack_forget()
                 target_entry.grid_remove()
                 cat_label.grid_remove()
                 cat_sel.grid_remove()
@@ -1167,6 +1241,9 @@ class EnterpriseBankUI(ctk.CTk):
 
                 if txn_type == "Transfer":
                     tgt_val = target_entry.get()
+                    if tgt_val == p_text or not tgt_val.strip() or tgt_val == "-- New Manual Transfer --":
+                        raise ValueError("Please select or enter a destination.")
+
                     if tgt_val.startswith("@"):
                         tgt_id, name = self.backend.resolve_username(tgt_val)
                         if not tgt_id: raise ValueError(f"Username {tgt_val} not found.")
@@ -1175,8 +1252,6 @@ class EnterpriseBankUI(ctk.CTk):
                         if not tgt_val.isdigit(): raise ValueError("Invalid Destination ID.")
                         tgt_id = int(tgt_val)
                         if not self.backend.verify_account(tgt_id): raise ValueError("Target account does not exist.")
-                    elif tgt_val == "-- New Manual Transfer --" or tgt_val == "" or tgt_val == "Select, type Account #, or @Username":
-                        raise ValueError("Please select or enter a destination.")
                     else:
                         if not tgt_val.isdigit(): raise ValueError("Destination must be numeric or @username.")
                         tgt_id = int(tgt_val)

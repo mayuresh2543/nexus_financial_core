@@ -1,16 +1,17 @@
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import sqlite3
 import random
 import hashlib
 from datetime import datetime
 import re
+from fpdf import FPDF
 
 # ==========================================
-# Core Backend: Expanded Schema
+# Core Backend: Data Management
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v2.db"):
+    def __init__(self, db_name="enterprise_bank_v3.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -54,19 +55,19 @@ class BankCore:
     def register_user(self, user_data):
         try:
             self.cursor.execute('''
-                INSERT INTO users (username, pin_hash, first_name, last_name, email, phone) 
+                INSERT INTO users (username, pin_hash, first_name, last_name, email, phone)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (
-                user_data['username'], 
+                user_data['username'],
                 self.hash_data(user_data['pin']),
                 user_data['first_name'],
                 user_data['last_name'],
                 user_data['email'],
                 user_data['phone']
             ))
-            
+
             user_id = self.cursor.lastrowid
-            
+
             # Provision default accounts
             for acc_type in ["Checking", "Savings"]:
                 acc_num = random.randint(10000000, 99999999)
@@ -80,7 +81,7 @@ class BankCore:
             return False, "Username is already taken."
 
     def authenticate(self, username, pin):
-        self.cursor.execute("SELECT user_id, first_name FROM users WHERE username=? AND pin_hash=?", (username, self.hash_data(pin)))
+        self.cursor.execute("SELECT user_id, first_name, last_name FROM users WHERE username=? AND pin_hash=?", (username, self.hash_data(pin)))
         return self.cursor.fetchone()
 
     def get_user_accounts(self, user_id):
@@ -90,7 +91,7 @@ class BankCore:
     def process_transaction(self, sender_acc, amount, txn_type, receiver_acc=None):
         try:
             self.conn.execute("BEGIN TRANSACTION")
-            
+
             self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (sender_acc,))
             sender_bal = self.cursor.fetchone()[0]
 
@@ -122,7 +123,7 @@ class BankCore:
         return self.cursor.fetchall()
 
 # ==========================================
-# Frontend Architecture
+# Frontend Architecture & UI
 # ==========================================
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -134,14 +135,14 @@ class EnterpriseBankUI(ctk.CTk):
         self.title("Nexus Financial Core - Enterprise")
         self.geometry("1100x700")
         self.minsize(900, 600)
-        
+
         self.active_user_id = None
         self.active_user_name = None
         self.active_accounts = {}
-        
+
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
-        
+
         self.show_auth_screen()
 
     def clear_screen(self):
@@ -153,22 +154,23 @@ class EnterpriseBankUI(ctk.CTk):
         self.clear_screen()
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
         auth_frame.pack(expand=True, fill="both")
-        
+
         card = ctk.CTkFrame(auth_frame, width=400, corner_radius=15)
         card.pack(expand=True, pady=100)
-        
+
         ctk.CTkLabel(card, text="NEXUS", font=ctk.CTkFont(size=32, weight="bold"), text_color="#3498db").pack(pady=(40, 5))
         ctk.CTkLabel(card, text="Secure System Access", text_color="gray").pack(pady=(0, 30))
-        
+
         user_entry = ctk.CTkEntry(card, placeholder_text="Username", width=280, height=40)
         user_entry.pack(pady=10)
         pin_entry = ctk.CTkEntry(card, placeholder_text="Secure PIN", show="*", width=280, height=40)
         pin_entry.pack(pady=10)
-        
+
         def login():
             user = self.backend.authenticate(user_entry.get().strip(), pin_entry.get().strip())
             if user:
-                self.active_user_id, self.active_user_name = user
+                self.active_user_id = user[0]
+                self.active_user_name = f"{user[1]} {user[2]}"
                 self.build_main_layout()
             else:
                 messagebox.showerror("Auth Failed", "Invalid credentials.")
@@ -176,25 +178,24 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkButton(card, text="Authenticate", command=login, width=280, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
         ctk.CTkButton(card, text="Create New Account", command=self.show_registration_screen, width=280, height=40, fg_color="transparent", border_width=1).pack(pady=(0, 40))
 
-    # --- Dedicated Registration Pipeline ---
+    # --- Registration Screen ---
     def show_registration_screen(self):
         self.clear_screen()
-        
+
         reg_frame = ctk.CTkFrame(self, fg_color="transparent")
         reg_frame.pack(expand=True, fill="both")
-        
+
         card = ctk.CTkFrame(reg_frame, width=500, corner_radius=15)
         card.pack(expand=True, pady=40, ipady=20)
-        
+
         ctk.CTkLabel(card, text="Client Onboarding", font=ctk.CTkFont(size=28, weight="bold")).pack(pady=(30, 20))
 
-        # Grid layout for form fields
         form_grid = ctk.CTkFrame(card, fg_color="transparent")
         form_grid.pack(padx=40, fill="x")
-        
+
         fname_entry = ctk.CTkEntry(form_grid, placeholder_text="First Name", width=190, height=40)
         fname_entry.grid(row=0, column=0, padx=(0, 10), pady=10)
-        
+
         lname_entry = ctk.CTkEntry(form_grid, placeholder_text="Last Name", width=190, height=40)
         lname_entry.grid(row=0, column=1, pady=10)
 
@@ -209,7 +210,7 @@ class EnterpriseBankUI(ctk.CTk):
 
         pin_entry = ctk.CTkEntry(form_grid, placeholder_text="Create 4-6 Digit PIN", show="*", width=190, height=40)
         pin_entry.grid(row=4, column=0, padx=(0, 10), pady=10)
-        
+
         confirm_pin_entry = ctk.CTkEntry(form_grid, placeholder_text="Confirm PIN", show="*", width=190, height=40)
         confirm_pin_entry.grid(row=4, column=1, pady=10)
 
@@ -224,7 +225,6 @@ class EnterpriseBankUI(ctk.CTk):
             }
             confirm_pin = confirm_pin_entry.get().strip()
 
-            # Validation Logic
             if not all(data.values()):
                 messagebox.showerror("Validation Error", "All fields are required.")
                 return
@@ -251,33 +251,33 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkButton(card, text="Submit Application", command=process_registration, width=390, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(30, 10))
         ctk.CTkButton(card, text="Cancel & Return", command=self.show_auth_screen, width=390, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 30))
 
-    # --- Main Application Shell ---
+    # --- Main Navigation Shell ---
     def build_main_layout(self):
         self.clear_screen()
-        
+
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_rowconfigure(6, weight=1)
-        
+
         ctk.CTkLabel(self.sidebar, text="NEXUS", font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").grid(row=0, column=0, padx=20, pady=(30, 30))
-        
+
         nav_btns = [
             ("Dashboard", self.view_dashboard),
             ("Transfers", self.view_transfers),
-            ("History Logs", self.view_history)
+            ("Statements & Logs", self.view_history)
         ]
-        
+
         for i, (text, command) in enumerate(nav_btns):
-            ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"), 
+            ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"),
                           hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
-                          
+
         ctk.CTkButton(self.sidebar, text="Sign Out", command=self.show_auth_screen, fg_color="#c0392b", hover_color="#a53125").grid(row=7, column=0, padx=20, pady=20, sticky="ew")
 
         self.content_area = ctk.CTkFrame(self, fg_color="transparent")
         self.content_area.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
         self.content_area.grid_columnconfigure(0, weight=1)
         self.content_area.grid_rowconfigure(1, weight=1)
-        
+
         self.view_dashboard()
 
     def load_data(self):
@@ -288,21 +288,25 @@ class EnterpriseBankUI(ctk.CTk):
         for widget in self.content_area.winfo_children():
             widget.destroy()
         self.load_data()
-        ctk.CTkLabel(self.content_area, text=title, font=ctk.CTkFont(size=32, weight="bold")).grid(row=0, column=0, sticky="w", pady=(0, 20))
-        
+
+        header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+
+        ctk.CTkLabel(header_frame, text=title, font=ctk.CTkFont(size=32, weight="bold")).pack(side="left")
+
         frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
         frame.grid(row=1, column=0, sticky="nsew")
-        return frame
+        return frame, header_frame
 
     # --- View: Dashboard ---
     def view_dashboard(self):
-        container = self.set_content(f"Welcome, {self.active_user_name}")
-        
+        container, _ = self.set_content(f"Welcome, {self.active_user_name.split()[0]}")
+
         total_bal = sum(acc['bal'] for acc in self.active_accounts.values())
-        
+
         metric_frame = ctk.CTkFrame(container, fg_color="transparent")
         metric_frame.pack(fill="x", pady=(0, 20))
-        
+
         def create_metric_card(parent, title, value, color):
             card = ctk.CTkFrame(parent, corner_radius=10)
             card.pack(side="left", expand=True, fill="both", padx=5)
@@ -320,10 +324,10 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- View: Operations / Transfers ---
+    # --- View: Transfers ---
     def view_transfers(self):
-        container = self.set_content("Operations & Routing")
-        
+        container, _ = self.set_content("Operations & Routing")
+
         tabs = ctk.CTkTabview(container)
         tabs.pack(fill="both", expand=True)
         tabs.add("Quick Deposit/Withdraw")
@@ -361,7 +365,7 @@ class EnterpriseBankUI(ctk.CTk):
         target_entry.pack(pady=10)
         p2p_amt = ctk.CTkEntry(t2, placeholder_text="Amount (₹)", width=300, justify="center")
         p2p_amt.pack(pady=10)
-        
+
         def exec_p2p():
             src_id = self.active_accounts[source_sel.get()]["id"]
             try:
@@ -377,17 +381,24 @@ class EnterpriseBankUI(ctk.CTk):
                     messagebox.showerror("Failed", msg)
             except ValueError:
                 messagebox.showerror("Error", "Check target format and amount.")
-                
+
         ctk.CTkButton(t2, text="Execute Transfer", command=exec_p2p, width=300).pack(pady=20)
 
-    # --- View: History Grid ---
+    # --- View: History Grid & PDF Generation ---
     def view_history(self):
-        container = self.set_content("Transaction Ledger")
-        
-        acc_selector = ctk.CTkSegmentedButton(container, values=list(self.active_accounts.keys()), command=self._render_ledger)
-        acc_selector.pack(fill="x", pady=(0, 10))
-        acc_selector.set("Checking")
-        
+        container, header = self.set_content("Account Statements")
+
+        controls_frame = ctk.CTkFrame(container, fg_color="transparent")
+        controls_frame.pack(fill="x", pady=(0, 10))
+
+        self.current_history_acc = ctk.StringVar(value="Checking")
+        acc_selector = ctk.CTkSegmentedButton(controls_frame, values=list(self.active_accounts.keys()),
+                                              variable=self.current_history_acc, command=self._render_ledger)
+        acc_selector.pack(side="left")
+
+        ctk.CTkButton(controls_frame, text="Export PDF", command=self._generate_pdf,
+                      fg_color="#3498db", hover_color="#2980b9", width=120).pack(side="right")
+
         self.ledger_frame = ctk.CTkScrollableFrame(container)
         self.ledger_frame.pack(fill="both", expand=True)
         self._render_ledger("Checking")
@@ -395,25 +406,93 @@ class EnterpriseBankUI(ctk.CTk):
     def _render_ledger(self, acc_type):
         for widget in self.ledger_frame.winfo_children():
             widget.destroy()
-            
+
         acc_id = self.active_accounts[acc_type]["id"]
         logs = self.backend.get_history(acc_id)
-        
+
         headers = ["Type", "Date/Time", "Target", "Amount", "Closing Balance"]
         for i, h in enumerate(headers):
             ctk.CTkLabel(self.ledger_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=10, pady=10, sticky="w")
-            
+
         for r, txn in enumerate(logs):
             txn_type, amt, bal_after, target, ts = txn
             formatted_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
             color = "#e74c3c" if txn_type in ['Withdrawal', 'Transfer'] else "#2ecc71"
             prefix = "-" if txn_type in ['Withdrawal', 'Transfer'] else "+"
-            
+
             ctk.CTkLabel(self.ledger_frame, text=txn_type).grid(row=r+1, column=0, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=formatted_date, text_color="gray").grid(row=r+1, column=1, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=str(target) if target else "-", text_color="gray").grid(row=r+1, column=2, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=f"{prefix}₹{amt:,.2f}", text_color=color).grid(row=r+1, column=3, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=f"₹{bal_after:,.2f}", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=4, padx=10, pady=5, sticky="w")
+
+    def _generate_pdf(self):
+        acc_type = self.current_history_acc.get()
+        acc_id = self.active_accounts[acc_type]["id"]
+        logs = self.backend.get_history(acc_id)
+
+        if not logs:
+            messagebox.showinfo("No Data", "There are no transactions to export.")
+            return
+
+        # Open file dialog for save location
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            title="Save Statement As",
+            initialfile=f"Nexus_Statement_{acc_id}.pdf"
+        )
+
+        if not file_path:
+            return  # User cancelled the dialog
+
+        try:
+            pdf = FPDF()
+            pdf.add_page()
+
+            # Header
+            pdf.set_font("Arial", "B", 18)
+            pdf.cell(190, 10, txt="NEXUS Financial Core", ln=True, align='C')
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(190, 10, txt="Official Account Statement", ln=True, align='C')
+            pdf.ln(10)
+
+            # Account Details
+            pdf.set_font("Arial", "", 10)
+            pdf.cell(100, 8, txt=f"Account Holder: {self.active_user_name}", ln=False)
+            pdf.cell(90, 8, txt=f"Date Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+            pdf.cell(100, 8, txt=f"Account Type: {acc_type}", ln=False)
+            pdf.cell(90, 8, txt=f"Account Number: {acc_id}", ln=True)
+            pdf.ln(10)
+
+            # Table Header
+            pdf.set_font("Arial", "B", 10)
+            pdf.cell(35, 10, "Date/Time", 1)
+            pdf.cell(30, 10, "Type", 1)
+            pdf.cell(40, 10, "Target ID", 1)
+            pdf.cell(40, 10, "Amount (INR)", 1)
+            pdf.cell(45, 10, "Balance (INR)", 1)
+            pdf.ln()
+
+            # Table Data
+            pdf.set_font("Arial", "", 9)
+            for txn in logs:
+                txn_type, amt, bal_after, target, ts = txn
+                fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
+                prefix = "-" if txn_type in ['Withdrawal', 'Transfer'] else "+"
+
+                pdf.cell(35, 10, fmt_date, 1)
+                pdf.cell(30, 10, txn_type, 1)
+                pdf.cell(40, 10, str(target) if target else "-", 1)
+                pdf.cell(40, 10, f"{prefix}{amt:,.2f}", 1)
+                pdf.cell(45, 10, f"{bal_after:,.2f}", 1)
+                pdf.ln()
+
+            pdf.output(file_path)
+            messagebox.showinfo("Export Successful", f"Statement saved successfully to:\n{file_path}")
+
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to generate PDF:\n{str(e)}")
 
 # ==========================================
 # Execution

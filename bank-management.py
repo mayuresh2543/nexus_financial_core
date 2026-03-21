@@ -6,6 +6,7 @@ import hashlib
 import secrets
 from datetime import datetime
 import re
+import csv
 from fpdf import FPDF
 
 # ==========================================
@@ -193,6 +194,17 @@ class BankCore:
         ''', (user_id, limit))
         return self.cursor.fetchall()
 
+    def get_all_users_with_balances(self):
+        """Fetches all users alongside their total calculated balance for the CSV report."""
+        self.cursor.execute('''
+            SELECT u.user_id, u.first_name, u.last_name, u.email, u.status, COALESCE(SUM(a.balance), 0)
+            FROM users u
+            LEFT JOIN accounts a ON u.user_id = a.user_id
+            WHERE u.role = 'customer'
+            GROUP BY u.user_id
+        ''')
+        return self.cursor.fetchall()
+
 # ==========================================
 # Frontend Architecture & UI
 # ==========================================
@@ -274,7 +286,6 @@ class EnterpriseBankUI(ctk.CTk):
 
             if user:
                 role = user[5]
-                # Enforce portal segregation
                 if mode == "Customer Access" and role == "admin":
                     self.show_toast("System Admins must use the Staff Portal.", "error")
                     return
@@ -382,7 +393,7 @@ class EnterpriseBankUI(ctk.CTk):
             self.active_user_data = {}
             if self._timeout_id: self.after_cancel(self._timeout_id)
             self.show_auth_screen()
-            self.auth_mode_var.set("Staff Portal") # Keep them on the staff tab
+            self.auth_mode_var.set("Staff Portal")
             self.show_toast("Successfully logged out of Admin panel.", "info")
 
         ctk.CTkButton(self.sidebar, text="Terminate Session", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=7, column=0, padx=20, pady=20, sticky="ew")
@@ -422,6 +433,14 @@ class EnterpriseBankUI(ctk.CTk):
 
     def view_admin_users(self):
         container = self.set_admin_content("Customer Directory")
+
+        # New Feature: Export CSV Button
+        controls_frame = ctk.CTkFrame(container, fg_color="transparent")
+        controls_frame.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkButton(controls_frame, text="Export CSV Report", command=self._export_admin_csv,
+                      fg_color="#2ecc71", hover_color="#27ae60", width=150).pack(side="right")
+
         users = self.backend.get_all_users()
 
         list_frame = ctk.CTkScrollableFrame(container)
@@ -454,7 +473,31 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkButton(action_frame, text="Inspect", width=70, fg_color="#3498db", hover_color="#2980b9", command=lambda x=uid: self.view_admin_inspector(x)).pack(side="left", padx=(0, 5))
             ctk.CTkButton(action_frame, text=btn_txt, width=70, fg_color=btn_col, command=lambda x=uid, y=stat: toggle_status(x, y)).pack(side="left")
 
-    # --- New Admin Deep Inspector ---
+    def _export_admin_csv(self):
+        report_data = self.backend.get_all_users_with_balances()
+        if not report_data:
+            self.show_toast("No user data available to export.", "error")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            title="Save Admin Report As",
+            initialfile=f"Nexus_Global_Report_{datetime.now().strftime('%Y%m%d')}.csv"
+        )
+
+        if not file_path: return
+
+        try:
+            with open(file_path, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(["User ID", "First Name", "Last Name", "Email", "Account Status", "Total Assets (INR)"])
+                for row in report_data:
+                    writer.writerow(row)
+            self.show_toast("CSV Report successfully exported.", "success")
+        except Exception as e:
+            self.show_toast("Failed to generate CSV.", "error")
+
     def view_admin_inspector(self, target_uid):
         for widget in self.content_area.winfo_children(): widget.destroy()
 
@@ -462,7 +505,6 @@ class EnterpriseBankUI(ctk.CTk):
         if not u_info: return
         usr, fn, ln, em, ph, stat, created = u_info
 
-        # Header with Back Button
         header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
 
@@ -474,7 +516,6 @@ class EnterpriseBankUI(ctk.CTk):
         container.grid_columnconfigure(0, weight=1)
         container.grid_rowconfigure(2, weight=1)
 
-        # 1. Profile Data Card
         profile_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         profile_card.grid(row=0, column=0, sticky="ew", pady=(0, 15), ipadx=15, ipady=15)
 
@@ -483,7 +524,6 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(profile_card, text=lbl, text_color="gray", width=80, anchor="w").grid(row=0, column=i*2, padx=(10, 5), pady=5)
             ctk.CTkLabel(profile_card, text=val, font=ctk.CTkFont(weight="bold")).grid(row=0, column=(i*2)+1, padx=(0, 20), pady=5)
 
-        # 2. Account Balances Card
         accs = self.backend.get_user_accounts(target_uid)
         acc_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         acc_card.grid(row=1, column=0, sticky="ew", pady=(0, 15), ipadx=15, ipady=15)
@@ -495,7 +535,6 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"{acc_type} ({acc_num})", text_color="gray").pack(side="left")
             ctk.CTkLabel(row, text=f"₹{bal:,.2f}", font=ctk.CTkFont(weight="bold")).pack(side="right")
 
-        # 3. Unified Ledger (Cross-Account)
         history = self.backend.get_all_user_transactions(target_uid, limit=100)
         ledger_card = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         ledger_card.grid(row=2, column=0, sticky="nsew", ipadx=15, ipady=15)
@@ -573,7 +612,6 @@ class EnterpriseBankUI(ctk.CTk):
         frame.grid(row=1, column=0, sticky="nsew")
         return frame
 
-    # --- View 1: Dashboard ---
     def view_dashboard(self):
         container = self.set_content(f"Welcome, {self.active_user_data['name'].split()[0]}")
         total_bal = sum(acc['bal'] for acc in self.active_accounts.values())
@@ -598,7 +636,6 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- View 2: Transfers (Fixed Alignment & Dup Check) ---
     def view_transfers(self):
         container = self.set_content("Operations Hub")
         container.grid_rowconfigure(0, weight=1)
@@ -752,7 +789,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
-    # --- View 3: Native Analytics Engine ---
     def view_analytics(self):
         container = self.set_content("Financial Trend Analysis")
 
@@ -802,7 +838,6 @@ class EnterpriseBankUI(ctk.CTk):
         for i in range(len(points)-1): self.canvas.create_line(points[i][0], points[i][1], points[i+1][0], points[i+1][1], fill="#3498db", width=3)
         for x, y in points: self.canvas.create_oval(x-5, y-5, x+5, y+5, fill="#2ecc71", outline="#1e1e1e", width=2)
 
-    # --- View 4: Statements ---
     def view_history(self):
         container = self.set_content("Account Statements")
 
@@ -920,7 +955,6 @@ class EnterpriseBankUI(ctk.CTk):
         except Exception as e:
             self.show_toast("Failed to generate PDF.", "error")
 
-    # --- View 5: Preferences ---
     def view_settings(self):
         container = self.set_content("System Preferences")
 

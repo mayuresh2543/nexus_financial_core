@@ -4,7 +4,7 @@ import sqlite3
 import random
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 import csv
 from fpdf import FPDF
@@ -13,7 +13,7 @@ from fpdf import FPDF
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v10.db"):
+    def __init__(self, db_name="enterprise_bank_v11.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -56,13 +56,15 @@ class BankCore:
             CREATE TABLE IF NOT EXISTS fixed_deposits (
                 fd_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
+                linked_account INTEGER NOT NULL,
                 principal REAL NOT NULL,
                 interest_rate REAL NOT NULL,
                 duration_months INTEGER NOT NULL,
                 maturity_date TIMESTAMP NOT NULL,
                 status TEXT DEFAULT 'active',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (linked_account) REFERENCES accounts(account_number)
             );
             CREATE TABLE IF NOT EXISTS transactions (
                 txn_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,7 +179,7 @@ class BankCore:
         try:
             self.conn.execute("BEGIN TRANSACTION")
 
-            # Security: Check if linked card is frozen before allowing checking withdrawals
+            # Security: Check if linked card is frozen before allowing withdrawals
             if txn_type in ['Withdrawal', 'Transfer']:
                 self.cursor.execute("SELECT status FROM cards WHERE account_number=?", (sender_acc,))
                 card_stat = self.cursor.fetchone()
@@ -303,26 +305,29 @@ class BankCore:
         return new_stat
 
     def get_fixed_deposits(self, user_id):
-        self.cursor.execute("SELECT fd_id, principal, interest_rate, maturity_date, status FROM fixed_deposits WHERE user_id=? AND status='active'", (user_id,))
+        self.cursor.execute("SELECT fd_id, principal, interest_rate, maturity_date, status, linked_account FROM fixed_deposits WHERE user_id=? AND status='active'", (user_id,))
         return self.cursor.fetchall()
 
-    def open_fd(self, user_id, amount, months):
+    def open_fd(self, user_id, source_acc, amount, months):
         try:
             self.conn.execute("BEGIN TRANSACTION")
-            self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
-            chk_acc, chk_bal = self.cursor.fetchone()
-            if chk_bal < amount: raise ValueError("Insufficient funds in Checking.")
+            self.cursor.execute("SELECT balance FROM accounts WHERE account_number=? AND user_id=?", (source_acc, user_id))
+            acc_data = self.cursor.fetchone()
+            if not acc_data: raise ValueError("Invalid account selected.")
+            chk_bal = acc_data[0]
+
+            if chk_bal < amount: raise ValueError("Insufficient funds in selected account.")
 
             new_bal = chk_bal - amount
-            self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, chk_acc))
-            self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)", (chk_acc, 'FD Creation', amount, new_bal))
+            self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, source_acc))
+            self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)", (source_acc, 'FD Creation', amount, new_bal))
 
             mat_ts = datetime.now().timestamp() + (months * 30.44 * 24 * 3600)
             mat_date = datetime.fromtimestamp(mat_ts).strftime('%Y-%m-%d %H:%M:%S')
             rate = 0.05 if months <= 6 else 0.075 # Dynamic rate
 
-            self.cursor.execute("INSERT INTO fixed_deposits (user_id, principal, interest_rate, duration_months, maturity_date) VALUES (?, ?, ?, ?, ?)",
-                                (user_id, amount, rate, months, mat_date))
+            self.cursor.execute("INSERT INTO fixed_deposits (user_id, linked_account, principal, interest_rate, duration_months, maturity_date) VALUES (?, ?, ?, ?, ?, ?)",
+                                (user_id, source_acc, amount, rate, months, mat_date))
             self.conn.commit()
             return True, "Fixed Deposit securely locked."
         except Exception as e:
@@ -332,21 +337,22 @@ class BankCore:
     def break_fd(self, user_id, fd_id):
         try:
             self.conn.execute("BEGIN TRANSACTION")
-            self.cursor.execute("SELECT principal, status FROM fixed_deposits WHERE fd_id=? AND user_id=?", (fd_id, user_id))
+            self.cursor.execute("SELECT principal, status, linked_account FROM fixed_deposits WHERE fd_id=? AND user_id=?", (fd_id, user_id))
             fd_data = self.cursor.fetchone()
             if not fd_data or fd_data[1] != 'active': raise ValueError("Invalid Deposit.")
             prin = fd_data[0]
+            linked_acc = fd_data[2]
 
-            self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
-            chk_acc, chk_bal = self.cursor.fetchone()
+            self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (linked_acc,))
+            chk_bal = self.cursor.fetchone()[0]
 
             new_bal = chk_bal + prin # Principal returned, interest forfeited
-            self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, chk_acc))
-            self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)", (chk_acc, 'FD Broken (Principal Returned)', prin, new_bal))
+            self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, linked_acc))
+            self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after) VALUES (?, ?, ?, ?)", (linked_acc, 'FD Broken (Principal Returned)', prin, new_bal))
             self.cursor.execute("UPDATE fixed_deposits SET status='broken' WHERE fd_id=?", (fd_id,))
 
             self.conn.commit()
-            return True, "FD Broken. Principal returned to Checking."
+            return True, "FD Broken. Principal returned to linked account."
         except Exception as e:
             self.conn.rollback()
             return False, str(e)
@@ -713,8 +719,8 @@ class EnterpriseBankUI(ctk.CTk):
         nav_btns = [
             ("Dashboard", self.view_dashboard),
             ("Operations", self.view_transfers),
-            ("Cards", self.view_cards),          # NEW
-            ("Wealth (FDs)", self.view_wealth),  # NEW
+            ("Cards", self.view_cards),
+            ("Wealth (FDs)", self.view_wealth),
             ("Credit Services", self.view_credit),
             ("Analytics", self.view_analytics),
             ("Statements", self.view_history),
@@ -774,7 +780,6 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- NEW VIEW: Virtual Card Management ---
     def view_cards(self):
         container = self.set_content("Virtual Card Management")
         container.grid_rowconfigure(0, weight=1)
@@ -787,15 +792,13 @@ class EnterpriseBankUI(ctk.CTk):
 
         c_id, c_num, c_exp, c_cvv, c_stat = card_data
 
-        # Center wrapper
         wrapper = ctk.CTkFrame(container, fg_color="transparent")
         wrapper.grid(row=0, column=0, sticky="")
 
-        # Card Graphic UI
         card_bg = "#34495E" if c_stat == 'active' else "#7f8c8d"
         card_graphic = ctk.CTkFrame(wrapper, fg_color=card_bg, corner_radius=15, width=450, height=280)
         card_graphic.pack(pady=(0, 30))
-        card_graphic.pack_propagate(False) # Lock size
+        card_graphic.pack_propagate(False)
 
         ctk.CTkLabel(card_graphic, text="NEXUS DEBIT", font=ctk.CTkFont(size=20, weight="bold"), text_color="#ecf0f1").place(x=25, y=25)
         ctk.CTkLabel(card_graphic, text="Virtual Checking", text_color="#bdc3c7").place(x=25, y=55)
@@ -814,7 +817,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkLabel(card_graphic, text=self.active_user_data['name'].upper(), text_color="white", font=ctk.CTkFont(size=18)).place(x=25, y=240)
 
-        # Controls
         controls = ctk.CTkFrame(wrapper, fg_color="transparent")
         controls.pack(fill="x")
 
@@ -832,7 +834,7 @@ class EnterpriseBankUI(ctk.CTk):
         def toggle_freeze():
             new_stat = self.backend.toggle_card(c_id, c_stat)
             self.show_toast(f"Card is now {new_stat.upper()}.", "success")
-            self.view_cards() # Refresh to update colors
+            self.view_cards()
 
         btn_state = "normal" if c_stat == 'active' else "disabled"
         reveal_btn = ctk.CTkButton(controls, text="Reveal Details", width=200, height=40, border_width=1, fg_color="transparent", state=btn_state, command=toggle_visibility)
@@ -843,9 +845,9 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkButton(controls, text=freeze_text, width=200, height=40, fg_color=freeze_color, command=toggle_freeze).pack(side="right", padx=10)
 
         if c_stat == 'frozen':
-            ctk.CTkLabel(wrapper, text="WARNING: Your card is frozen. Checking withdrawals are blocked.", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).pack(pady=20)
+            ctk.CTkLabel(wrapper, text="WARNING: Your card is frozen. Account withdrawals are blocked.", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).pack(pady=20)
 
-    # --- NEW VIEW: Fixed Deposits (Wealth) ---
+    # --- UPGRADED VIEW: Fixed Deposits (Wealth) ---
     def view_wealth(self):
         container = self.set_content("Wealth & Fixed Deposits")
         container.grid_rowconfigure(1, weight=1)
@@ -863,7 +865,7 @@ class EnterpriseBankUI(ctk.CTk):
             scroll = ctk.CTkScrollableFrame(ledger_frame, fg_color="transparent", height=150)
             scroll.pack(fill="x", expand=True)
 
-            headers = ["FD ID", "Principal", "Interest Rate", "Maturity Date", "Action"]
+            headers = ["FD ID", "Linked Account", "Principal", "Interest", "Maturity", "Action"]
             for i, h in enumerate(headers): ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=5, sticky="w")
 
             def break_deposit(fd_id):
@@ -875,13 +877,19 @@ class EnterpriseBankUI(ctk.CTk):
                     self.show_toast(msg, "error")
 
             for r, fd in enumerate(fds):
-                f_id, prin, rate, mat_date, stat = fd
+                f_id, prin, rate, mat_date, stat, link_acc = fd
                 fmt_date = datetime.strptime(mat_date, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %Y')
+
+                acc_name = "Unknown"
+                for name, data in self.active_accounts.items():
+                    if data["id"] == link_acc: acc_name = name
+
                 ctk.CTkLabel(scroll, text=f"FD-{f_id}").grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
-                ctk.CTkLabel(scroll, text=f"₹{prin:,.2f}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
-                ctk.CTkLabel(scroll, text=f"{rate*100}%", text_color="#2ecc71", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
-                ctk.CTkLabel(scroll, text=fmt_date).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
-                ctk.CTkButton(scroll, text="Break Early", width=80, fg_color="#e74c3c", command=lambda x=f_id: break_deposit(x)).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"{acc_name}").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"₹{prin:,.2f}").grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=f"{rate*100}%", text_color="#2ecc71", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
+                ctk.CTkLabel(scroll, text=fmt_date).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+                ctk.CTkButton(scroll, text="Break Early", width=80, fg_color="#e74c3c", command=lambda x=f_id: break_deposit(x)).grid(row=r+1, column=5, padx=15, pady=5, sticky="w")
 
         app_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         app_frame.grid(row=1, column=0, sticky="nsew", ipadx=15, ipady=15)
@@ -891,31 +899,37 @@ class EnterpriseBankUI(ctk.CTk):
         form_grid = ctk.CTkFrame(app_frame, fg_color="transparent")
         form_grid.pack(anchor="w", padx=10)
 
-        ctk.CTkLabel(form_grid, text="Investment Amount (₹):", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5))
-        amount_entry = ctk.CTkEntry(form_grid, placeholder_text="e.g., 10000", width=250, height=40)
-        amount_entry.grid(row=1, column=0, sticky="w", padx=(0, 20))
+        ctk.CTkLabel(form_grid, text="Source Account:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5))
+        acc_options = [f"{name} ({data['id']})" for name, data in self.active_accounts.items()]
+        source_sel = ctk.CTkOptionMenu(form_grid, values=acc_options, width=220, height=40)
+        source_sel.grid(row=1, column=0, sticky="w", padx=(0, 15))
 
-        ctk.CTkLabel(form_grid, text="Lock-in Duration:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, sticky="w", pady=(10, 5))
+        ctk.CTkLabel(form_grid, text="Investment Amount (₹):", font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, sticky="w", pady=(10, 5))
+        amount_entry = ctk.CTkEntry(form_grid, placeholder_text="e.g., 10000", width=220, height=40)
+        amount_entry.grid(row=1, column=1, sticky="w", padx=(0, 15))
+
+        ctk.CTkLabel(form_grid, text="Lock-in Duration:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=2, sticky="w", pady=(10, 5))
         dur_var = ctk.StringVar(value="6 Months (5%)")
         dur_menu = ctk.CTkOptionMenu(form_grid, values=["3 Months (5%)", "6 Months (5%)", "12 Months (7.5%)"], variable=dur_var, width=200, height=40)
-        dur_menu.grid(row=1, column=1, sticky="w")
+        dur_menu.grid(row=1, column=2, sticky="w")
 
-        ctk.CTkLabel(form_grid, text="Note: Funds will be deducted from your Checking account. Breaking early forfeits all interest.", text_color="gray").grid(row=2, column=0, columnspan=2, sticky="w", pady=(20, 5))
+        ctk.CTkLabel(form_grid, text="Note: Funds will be deducted from your selected account. Breaking early forfeits all interest.", text_color="gray").grid(row=2, column=0, columnspan=3, sticky="w", pady=(20, 5))
 
         def submit_fd():
             try:
+                src_id = self.active_accounts[source_sel.get().split(" (")[0]]["id"]
                 amt = float(amount_entry.get())
                 if amt < 500: raise ValueError("Minimum deposit is ₹500.")
                 months = int(dur_var.get().split(" ")[0])
 
-                success, msg = self.backend.open_fd(self.active_user_data["id"], amt, months)
+                success, msg = self.backend.open_fd(self.active_user_data["id"], src_id, amt, months)
                 if success:
                     self.show_toast(msg, "success")
                     self.view_wealth()
                 else:
                     self.show_toast(msg, "error")
             except ValueError as e:
-                err_msg = str(e) if "could not convert" not in str(e) else "Invalid numerical amount."
+                err_msg = str(e) if "could not convert" not in str(e) else str(e)
                 self.show_toast(err_msg, "error")
 
         ctk.CTkButton(app_frame, text="Lock Deposit", font=ctk.CTkFont(weight="bold"), height=40, width=250, fg_color="#2ecc71", command=submit_fd).pack(anchor="w", padx=10, pady=(30, 0))

@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from tkinter import filedialog, simpledialog
+from tkinter import filedialog
 import sqlite3
 import random
 import hashlib
@@ -9,10 +9,10 @@ import re
 from fpdf import FPDF
 
 # ==========================================
-# Core Backend: RBAC & Advanced Schema
+# Core Backend: Advanced Verification
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v5.db"):
+    def __init__(self, db_name="enterprise_bank_v6.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -62,7 +62,6 @@ class BankCore:
         self._seed_admin()
 
     def _seed_admin(self):
-        """Injects a master admin account on first run."""
         self.cursor.execute("SELECT 1 FROM users WHERE username='admin'")
         if not self.cursor.fetchone():
             salt = secrets.token_hex(16)
@@ -112,6 +111,20 @@ class BankCore:
         self.cursor.execute("SELECT account_number, account_type, balance FROM accounts WHERE user_id=?", (user_id,))
         return self.cursor.fetchall()
 
+    def verify_account(self, account_number):
+        """Looks up a target account and returns the masked owner name for verified transfers."""
+        self.cursor.execute('''
+            SELECT u.first_name, u.last_name
+            FROM accounts a
+            JOIN users u ON a.user_id = u.user_id
+            WHERE a.account_number = ?
+        ''', (account_number,))
+        result = self.cursor.fetchone()
+        if result:
+            # Mask the name (e.g., "Alexander S.")
+            return f"{result[0]} {result[1][0]}."
+        return None
+
     def process_transaction(self, sender_acc, amount, txn_type, receiver_acc=None):
         try:
             self.conn.execute("BEGIN TRANSACTION")
@@ -126,8 +139,9 @@ class BankCore:
             self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
                                 (sender_acc, txn_type, amount, new_sender_bal, receiver_acc))
 
+            target_name = None
             if txn_type == 'Transfer' and receiver_acc:
-                self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (receiver_acc,))
+                self.cursor.execute("SELECT balance, user_id FROM accounts WHERE account_number=?", (receiver_acc,))
                 receiver_data = self.cursor.fetchone()
                 if receiver_data:
                     new_rec_bal = receiver_data[0] + amount
@@ -135,18 +149,19 @@ class BankCore:
                     self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
                                         (receiver_acc, 'Received', amount, new_rec_bal, sender_acc))
 
+                    # Get target name for the success message
+                    target_name = self.verify_account(receiver_acc)
+
             self.conn.commit()
-            return True, "Transaction Successful"
+            return True, target_name if target_name else "Transaction Successful"
         except Exception as e:
             self.conn.rollback()
             return False, str(e)
 
-    # --- Data Optimization: Pagination ---
     def get_history(self, account_number, limit=50, offset=0):
         self.cursor.execute("SELECT txn_type, amount, balance_after, target_account, timestamp FROM transactions WHERE account_number=? ORDER BY timestamp DESC LIMIT ? OFFSET ?", (account_number, limit, offset))
         return self.cursor.fetchall()
 
-    # --- Beneficiary Logic ---
     def get_beneficiaries(self, user_id):
         self.cursor.execute("SELECT nickname, target_account FROM beneficiaries WHERE user_id=?", (user_id,))
         return self.cursor.fetchall()
@@ -248,7 +263,6 @@ class EnterpriseBankUI(ctk.CTk):
                 }
                 self.reset_timeout()
 
-                # RBAC Routing
                 if self.active_user_data["role"] == "admin":
                     self.build_admin_layout()
                     self.show_toast(f"Admin Access Granted.", "info")
@@ -379,7 +393,7 @@ class EnterpriseBankUI(ctk.CTk):
             new_stat = "frozen" if current_status == "active" else "active"
             self.backend.toggle_user_status(uid, new_stat)
             self.show_toast(f"User {uid} is now {new_stat}.", "info")
-            self.view_admin_users() # Refresh list
+            self.view_admin_users()
 
         for r, u in enumerate(users):
             uid, usr, fn, ln, stat = u
@@ -421,7 +435,7 @@ class EnterpriseBankUI(ctk.CTk):
         self.content_area.grid_columnconfigure(0, weight=1)
         self.content_area.grid_rowconfigure(1, weight=1)
 
-        self.history_offset = 0 # Initialize pagination state
+        self.history_offset = 0
         self.view_dashboard()
 
     def set_content(self, title):
@@ -461,7 +475,7 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- View: Transfers & Beneficiary Integration ---
+    # --- Upgraded View: Transfers & Beneficiary Management ---
     def view_transfers(self):
         container = self.set_content("Operations Hub")
         container.grid_rowconfigure(0, weight=1)
@@ -482,48 +496,91 @@ class EnterpriseBankUI(ctk.CTk):
         source_sel = ctk.CTkOptionMenu(fields_frame, values=acc_options, width=400, height=40)
         source_sel.grid(row=1, column=0, sticky="w", pady=(0, 15))
 
-        # Dynamic Target Entry (Manual or Saved)
         target_label = ctk.CTkLabel(fields_frame, text="Destination", font=ctk.CTkFont(weight="bold"))
 
-        # Load Beneficiaries
         bens = self.backend.get_beneficiaries(self.active_user_data["id"])
-        ben_list = ["-- Manual Entry --"] + [f"{b[0]} ({b[1]})" for b in bens]
+        ben_list = ["-- New Manual Transfer --"] + [f"{b[0]} ({b[1]})" for b in bens]
         target_combo = ctk.CTkComboBox(fields_frame, values=ben_list, width=400, height=40)
 
         ctk.CTkLabel(fields_frame, text="Amount (₹)", font=ctk.CTkFont(weight="bold")).grid(row=4, column=0, sticky="w", pady=(10, 5))
         amt_entry = ctk.CTkEntry(fields_frame, placeholder_text="0.00", width=400, height=40, font=ctk.CTkFont(size=18))
         amt_entry.grid(row=5, column=0, sticky="w", pady=(0, 20))
 
+        # Dynamic State Management
         def update_form_state(*args):
             if self.txn_type_var.get() == "Transfer":
                 target_label.grid(row=2, column=0, sticky="w", pady=(10, 5))
                 target_combo.grid(row=3, column=0, sticky="w", pady=(0, 15))
+                btn_txt = "Manage Contacts"
             else:
                 target_label.grid_remove()
                 target_combo.grid_remove()
+                btn_txt = ""
+
+            # Show/Hide Address Book Manager button
+            if btn_txt:
+                manage_btn.configure(text=btn_txt)
+                manage_btn.grid(row=2, column=1, sticky="s", padx=10, pady=(0,5))
+            else:
+                manage_btn.grid_remove()
+
+        # The new premium Beneficiary Modal
+        def open_beneficiary_manager():
+            modal = ctk.CTkToplevel(self)
+            modal.title("Address Book Manager")
+            modal.geometry("450x350")
+            modal.resizable(False, False)
+            modal.attributes("-topmost", True)
+            modal.grab_set() # Focus lock
+
+            ctk.CTkLabel(modal, text="Add Trusted Beneficiary", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 10))
+
+            acc_entry = ctk.CTkEntry(modal, placeholder_text="Enter Account Number", width=300)
+            acc_entry.pack(pady=10)
+
+            status_label = ctk.CTkLabel(modal, text="", text_color="gray")
+            status_label.pack()
+
+            verified_name = ctk.StringVar(value="")
+
+            def verify():
+                tgt = acc_entry.get().strip()
+                if not tgt.isdigit():
+                    status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
+                    return
+                name = self.backend.verify_account(int(tgt))
+                if name:
+                    status_label.configure(text=f"Verified Owner: {name}", text_color="#2ecc71")
+                    verified_name.set(name)
+                    nick_entry.configure(state="normal")
+                    save_btn.configure(state="normal")
+                else:
+                    status_label.configure(text="Account not found in system.", text_color="#e74c3c")
+                    nick_entry.configure(state="disabled")
+                    save_btn.configure(state="disabled")
+
+            ctk.CTkButton(modal, text="Verify Account", fg_color="transparent", border_width=1, command=verify).pack(pady=5)
+
+            nick_entry = ctk.CTkEntry(modal, placeholder_text="Assign Nickname (e.g. Landlord)", width=300, state="disabled")
+            nick_entry.pack(pady=10)
+
+            def save_ben():
+                tgt = int(acc_entry.get().strip())
+                nick = nick_entry.get().strip()
+                if not nick: nick = verified_name.get() # Default to masked name if empty
+
+                self.backend.add_beneficiary(self.active_user_data["id"], nick, tgt)
+                self.show_toast(f"Saved {nick} to Address Book.", "success")
+                modal.destroy()
+                self.view_transfers() # Hard refresh the dropdown
+
+            save_btn = ctk.CTkButton(modal, text="Save Beneficiary", command=save_ben, state="disabled")
+            save_btn.pack(pady=15)
+
+        manage_btn = ctk.CTkButton(fields_frame, text="Manage Contacts", width=120, fg_color="transparent", border_width=1, command=open_beneficiary_manager)
 
         self.txn_type_var.trace_add("write", update_form_state)
         update_form_state()
-
-        def add_contact():
-            nick = simpledialog.askstring("Save Contact", "Enter Nickname for this account:")
-            if nick:
-                tgt = target_combo.get()
-                if tgt.isdigit():
-                    self.backend.add_beneficiary(self.active_user_data["id"], nick, int(tgt))
-                    self.show_toast(f"Saved {nick} to Address Book.", "success")
-                    self.view_transfers() # Reload view
-
-        save_btn = ctk.CTkButton(fields_frame, text="+ Save to Book", width=120, fg_color="transparent", border_width=1, command=add_contact)
-
-        def check_show_save_btn(*args):
-            val = target_combo.get()
-            if val.isdigit() and val not in [b[1] for b in bens] and self.txn_type_var.get() == "Transfer":
-                save_btn.grid(row=3, column=1, padx=10)
-            else:
-                save_btn.grid_remove()
-
-        target_combo.bind("<KeyRelease>", check_show_save_btn)
 
         def execute_action():
             src_id = self.active_accounts[source_sel.get().split(" (")[0]]["id"]
@@ -535,18 +592,31 @@ class EnterpriseBankUI(ctk.CTk):
 
                 if txn_type == "Transfer":
                     tgt_val = target_combo.get()
-                    if "(" in tgt_val: tgt_val = tgt_val.split("(")[1].replace(")", "")
+                    if "(" in tgt_val:
+                        tgt_val = tgt_val.split("(")[1].replace(")", "")
+                    elif tgt_val == "-- New Manual Transfer --":
+                        raise ValueError("Please select a beneficiary or add one via Manage Contacts.")
+
                     if not tgt_val.isdigit(): raise ValueError("Destination must be a valid numeric ID.")
 
                     tgt_id = int(tgt_val)
                     if tgt_id == src_id: raise ValueError("Cannot route funds to originating account.")
+
+                    # Ensure account exists before executing
+                    if not self.backend.verify_account(tgt_id):
+                        raise ValueError("Target account does not exist in the system.")
+
                     success, msg = self.backend.process_transaction(src_id, amt, 'Transfer', tgt_id)
                 else:
                     db_txn = "Deposit" if txn_type == "Deposit" else "Withdrawal"
                     success, msg = self.backend.process_transaction(src_id, amt, db_txn, src_id if db_txn == 'Deposit' else None)
 
                 if success:
-                    self.show_toast(f"Successfully processed ₹{amt:,.2f}.", "success")
+                    # 'msg' contains the verified target name for transfers
+                    if txn_type == 'Transfer' and msg != "Transaction Successful":
+                        self.show_toast(f"Successfully routed ₹{amt:,.2f} to {msg}.", "success")
+                    else:
+                        self.show_toast(f"Successfully processed ₹{amt:,.2f}.", "success")
                     amt_entry.delete(0, 'end')
                 else:
                     self.show_toast(msg, "error")
@@ -555,7 +625,7 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
-    # --- View: Optimized Data Statements (Pagination) ---
+    # --- View: Optimized Data Statements ---
     def view_history(self):
         container = self.set_content("Account Statements")
 
@@ -575,7 +645,6 @@ class EnterpriseBankUI(ctk.CTk):
         self.ledger_frame = ctk.CTkFrame(container)
         self.ledger_frame.pack(fill="both", expand=True)
 
-        # Pagination Controls
         pag_frame = ctk.CTkFrame(container, fg_color="transparent")
         pag_frame.pack(fill="x", pady=10)
 
@@ -599,10 +668,14 @@ class EnterpriseBankUI(ctk.CTk):
         for widget in self.ledger_frame.winfo_children(): widget.destroy()
 
         acc_id = self.active_accounts[self.current_history_acc.get()]["id"]
-        # Optimized database call: Only fetches 50 rows at a time
         logs = self.backend.get_history(acc_id, limit=50, offset=self.history_offset)
 
-        self.page_label.configure(text=f"Records {self.history_offset + 1} - {self.history_offset + len(logs)}")
+        if not logs:
+            display_start = 0
+        else:
+            display_start = self.history_offset + 1
+
+        self.page_label.configure(text=f"Records {display_start} - {self.history_offset + len(logs)}")
         self.prev_btn.configure(state="normal" if self.history_offset > 0 else "disabled")
         self.next_btn.configure(state="normal" if len(logs) == 50 else "disabled")
 

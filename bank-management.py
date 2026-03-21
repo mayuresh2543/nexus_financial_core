@@ -9,10 +9,10 @@ import re
 from fpdf import FPDF
 
 # ==========================================
-# Core Backend: Advanced Verification
+# Core Backend: Advanced Verification & RBAC
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v6.db"):
+    def __init__(self, db_name="enterprise_bank_v7.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -62,6 +62,7 @@ class BankCore:
         self._seed_admin()
 
     def _seed_admin(self):
+        """Injects a master admin account on first run."""
         self.cursor.execute("SELECT 1 FROM users WHERE username='admin'")
         if not self.cursor.fetchone():
             salt = secrets.token_hex(16)
@@ -112,7 +113,6 @@ class BankCore:
         return self.cursor.fetchall()
 
     def verify_account(self, account_number):
-        """Looks up a target account and returns the masked owner name for verified transfers."""
         self.cursor.execute('''
             SELECT u.first_name, u.last_name
             FROM accounts a
@@ -121,7 +121,6 @@ class BankCore:
         ''', (account_number,))
         result = self.cursor.fetchone()
         if result:
-            # Mask the name (e.g., "Alexander S.")
             return f"{result[0]} {result[1][0]}."
         return None
 
@@ -141,7 +140,7 @@ class BankCore:
 
             target_name = None
             if txn_type == 'Transfer' and receiver_acc:
-                self.cursor.execute("SELECT balance, user_id FROM accounts WHERE account_number=?", (receiver_acc,))
+                self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (receiver_acc,))
                 receiver_data = self.cursor.fetchone()
                 if receiver_data:
                     new_rec_bal = receiver_data[0] + amount
@@ -149,7 +148,6 @@ class BankCore:
                     self.cursor.execute("INSERT INTO transactions (account_number, txn_type, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?)",
                                         (receiver_acc, 'Received', amount, new_rec_bal, sender_acc))
 
-                    # Get target name for the success message
                     target_name = self.verify_account(receiver_acc)
 
             self.conn.commit()
@@ -184,7 +182,7 @@ class BankCore:
         self.conn.commit()
 
 # ==========================================
-# Frontend Architecture & Advanced UI
+# Frontend Architecture & UI
 # ==========================================
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -475,7 +473,7 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)
 
-    # --- Upgraded View: Transfers & Beneficiary Management ---
+    # --- Upgraded View: Transfers (Fixed Alignment & Duplicate Check) ---
     def view_transfers(self):
         container = self.set_content("Operations Hub")
         container.grid_rowconfigure(0, weight=1)
@@ -496,7 +494,10 @@ class EnterpriseBankUI(ctk.CTk):
         source_sel = ctk.CTkOptionMenu(fields_frame, values=acc_options, width=400, height=40)
         source_sel.grid(row=1, column=0, sticky="w", pady=(0, 15))
 
-        target_label = ctk.CTkLabel(fields_frame, text="Destination", font=ctk.CTkFont(weight="bold"))
+        # Aligned Header Frame
+        target_header_frame = ctk.CTkFrame(fields_frame, fg_color="transparent")
+        target_label = ctk.CTkLabel(target_header_frame, text="Destination", font=ctk.CTkFont(weight="bold"))
+        target_label.pack(side="left")
 
         bens = self.backend.get_beneficiaries(self.active_user_data["id"])
         ben_list = ["-- New Manual Transfer --"] + [f"{b[0]} ({b[1]})" for b in bens]
@@ -506,32 +507,13 @@ class EnterpriseBankUI(ctk.CTk):
         amt_entry = ctk.CTkEntry(fields_frame, placeholder_text="0.00", width=400, height=40, font=ctk.CTkFont(size=18))
         amt_entry.grid(row=5, column=0, sticky="w", pady=(0, 20))
 
-        # Dynamic State Management
-        def update_form_state(*args):
-            if self.txn_type_var.get() == "Transfer":
-                target_label.grid(row=2, column=0, sticky="w", pady=(10, 5))
-                target_combo.grid(row=3, column=0, sticky="w", pady=(0, 15))
-                btn_txt = "Manage Contacts"
-            else:
-                target_label.grid_remove()
-                target_combo.grid_remove()
-                btn_txt = ""
-
-            # Show/Hide Address Book Manager button
-            if btn_txt:
-                manage_btn.configure(text=btn_txt)
-                manage_btn.grid(row=2, column=1, sticky="s", padx=10, pady=(0,5))
-            else:
-                manage_btn.grid_remove()
-
-        # The new premium Beneficiary Modal
         def open_beneficiary_manager():
             modal = ctk.CTkToplevel(self)
             modal.title("Address Book Manager")
             modal.geometry("450x350")
             modal.resizable(False, False)
             modal.attributes("-topmost", True)
-            modal.grab_set() # Focus lock
+            modal.grab_set()
 
             ctk.CTkLabel(modal, text="Add Trusted Beneficiary", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 10))
 
@@ -548,6 +530,15 @@ class EnterpriseBankUI(ctk.CTk):
                 if not tgt.isdigit():
                     status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
                     return
+
+                # Check for existing duplicates
+                existing_bens = [b[1] for b in self.backend.get_beneficiaries(self.active_user_data["id"])]
+                if int(tgt) in existing_bens:
+                    status_label.configure(text="Account already exists in Address Book.", text_color="#e74c3c")
+                    nick_entry.configure(state="disabled")
+                    save_btn.configure(state="disabled")
+                    return
+
                 name = self.backend.verify_account(int(tgt))
                 if name:
                     status_label.configure(text=f"Verified Owner: {name}", text_color="#2ecc71")
@@ -567,17 +558,33 @@ class EnterpriseBankUI(ctk.CTk):
             def save_ben():
                 tgt = int(acc_entry.get().strip())
                 nick = nick_entry.get().strip()
-                if not nick: nick = verified_name.get() # Default to masked name if empty
+                if not nick: nick = verified_name.get()
+
+                existing_bens = [b[1] for b in self.backend.get_beneficiaries(self.active_user_data["id"])]
+                if tgt in existing_bens:
+                    status_label.configure(text="Account already exists in Address Book.", text_color="#e74c3c")
+                    return
 
                 self.backend.add_beneficiary(self.active_user_data["id"], nick, tgt)
                 self.show_toast(f"Saved {nick} to Address Book.", "success")
                 modal.destroy()
-                self.view_transfers() # Hard refresh the dropdown
+                self.view_transfers()
 
             save_btn = ctk.CTkButton(modal, text="Save Beneficiary", command=save_ben, state="disabled")
             save_btn.pack(pady=15)
 
-        manage_btn = ctk.CTkButton(fields_frame, text="Manage Contacts", width=120, fg_color="transparent", border_width=1, command=open_beneficiary_manager)
+        # Packed into header frame to lock 400px width alignment
+        manage_btn = ctk.CTkButton(target_header_frame, text="Manage Contacts", width=120, height=28, fg_color="transparent", border_width=1, command=open_beneficiary_manager)
+
+        def update_form_state(*args):
+            if self.txn_type_var.get() == "Transfer":
+                target_header_frame.grid(row=2, column=0, sticky="ew", pady=(10, 5))
+                manage_btn.pack(side="right")
+                target_combo.grid(row=3, column=0, sticky="w", pady=(0, 15))
+            else:
+                target_header_frame.grid_remove()
+                manage_btn.pack_forget()
+                target_combo.grid_remove()
 
         self.txn_type_var.trace_add("write", update_form_state)
         update_form_state()
@@ -602,7 +609,6 @@ class EnterpriseBankUI(ctk.CTk):
                     tgt_id = int(tgt_val)
                     if tgt_id == src_id: raise ValueError("Cannot route funds to originating account.")
 
-                    # Ensure account exists before executing
                     if not self.backend.verify_account(tgt_id):
                         raise ValueError("Target account does not exist in the system.")
 
@@ -612,9 +618,8 @@ class EnterpriseBankUI(ctk.CTk):
                     success, msg = self.backend.process_transaction(src_id, amt, db_txn, src_id if db_txn == 'Deposit' else None)
 
                 if success:
-                    # 'msg' contains the verified target name for transfers
                     if txn_type == 'Transfer' and msg != "Transaction Successful":
-                        self.show_toast(f"Successfully routed ₹{amt:,.2f} to {msg}.", "success")
+                        self.show_toast(f"Successfully routed ₹{amt:,.2f} to {msg}", "success")
                     else:
                         self.show_toast(f"Successfully processed ₹{amt:,.2f}.", "success")
                     amt_entry.delete(0, 'end')
@@ -625,7 +630,7 @@ class EnterpriseBankUI(ctk.CTk):
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
 
-    # --- View: Optimized Data Statements ---
+    # --- View: Statements (Paginated) ---
     def view_history(self):
         container = self.set_content("Account Statements")
 
@@ -641,6 +646,9 @@ class EnterpriseBankUI(ctk.CTk):
         acc_selector = ctk.CTkSegmentedButton(controls_frame, values=list(self.active_accounts.keys()),
                                               variable=self.current_history_acc, command=reset_and_render)
         acc_selector.pack(side="left")
+
+        ctk.CTkButton(controls_frame, text="Export PDF", command=self._generate_pdf,
+                      fg_color="#3498db", hover_color="#2980b9", width=120).pack(side="right")
 
         self.ledger_frame = ctk.CTkFrame(container)
         self.ledger_frame.pack(fill="both", expand=True)
@@ -694,6 +702,52 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(self.ledger_frame, text=str(target) if target else "-", text_color="gray").grid(row=r+1, column=2, padx=20, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=f"{prefix}₹{amt:,.2f}", text_color=color).grid(row=r+1, column=3, padx=20, pady=5, sticky="w")
             ctk.CTkLabel(self.ledger_frame, text=f"₹{bal_after:,.2f}", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=4, padx=20, pady=5, sticky="w")
+
+    def _generate_pdf(self):
+        acc_type = self.current_history_acc.get()
+        acc_id = self.active_accounts[acc_type]["id"]
+        # Fetch up to 500 records for the PDF export specifically, rather than just the paginated view
+        logs = self.backend.get_history(acc_id, limit=500, offset=0)
+
+        if not logs:
+            self.show_toast("There are no transactions to export.", "error")
+            return
+
+        file_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")], title="Save Statement As", initialfile=f"Nexus_Statement_{acc_id}.pdf")
+        if not file_path: return
+
+        try:
+            pdf = FPDF()
+            pdf.add_page()
+
+            pdf.set_font("Arial", "B", 18)
+            pdf.cell(190, 10, txt="NEXUS Financial Core", ln=True, align='C')
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(190, 10, txt="Official Account Statement", ln=True, align='C')
+            pdf.ln(10)
+
+            pdf.set_font("Arial", "", 10)
+            pdf.cell(100, 8, txt=f"Account Holder: {self.active_user_data['name']}", ln=False)
+            pdf.cell(90, 8, txt=f"Date Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+            pdf.cell(100, 8, txt=f"Account Type: {acc_type}", ln=False)
+            pdf.cell(90, 8, txt=f"Account Number: {acc_id}", ln=True)
+            pdf.ln(10)
+
+            pdf.set_font("Arial", "B", 10)
+            pdf.cell(35, 10, "Date/Time", 1); pdf.cell(30, 10, "Type", 1); pdf.cell(40, 10, "Target ID", 1); pdf.cell(40, 10, "Amount (INR)", 1); pdf.cell(45, 10, "Balance (INR)", 1); pdf.ln()
+
+            pdf.set_font("Arial", "", 9)
+            for txn in logs:
+                txn_type, amt, bal_after, target, ts = txn
+                fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M')
+                prefix = "-" if txn_type in ['Withdrawal', 'Transfer'] else "+"
+
+                pdf.cell(35, 10, fmt_date, 1); pdf.cell(30, 10, txn_type, 1); pdf.cell(40, 10, str(target) if target else "-", 1); pdf.cell(40, 10, f"{prefix}{amt:,.2f}", 1); pdf.cell(45, 10, f"{bal_after:,.2f}", 1); pdf.ln()
+
+            pdf.output(file_path)
+            self.show_toast("Statement successfully exported.", "success")
+        except Exception as e:
+            self.show_toast("Failed to generate PDF.", "error")
 
 # ==========================================
 # Execution

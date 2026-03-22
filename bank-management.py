@@ -14,7 +14,7 @@ import math
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v21_classic.db"):
+    def __init__(self, db_name="enterprise_bank_v22.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -229,7 +229,6 @@ class BankCore:
     def process_transaction(self, sender_acc, amount, txn_type, category='General', receiver_acc=None):
         try:
             self.conn.execute("BEGIN TRANSACTION")
-
             if txn_type in ['Withdrawal', 'Transfer']:
                 self.cursor.execute("SELECT status FROM cards WHERE account_number=?", (sender_acc,))
                 card_stat = self.cursor.fetchone()
@@ -276,7 +275,6 @@ class BankCore:
         self.cursor.execute("INSERT INTO beneficiaries (user_id, nickname, target_account) VALUES (?, ?, ?)", (user_id, nickname, target_account))
         self.conn.commit()
 
-    # --- PFM: Spending Analytics ---
     def get_spending_by_category(self, account_number):
         self.cursor.execute('''
             SELECT category, SUM(amount) FROM transactions
@@ -285,7 +283,6 @@ class BankCore:
         ''', (account_number,))
         return self.cursor.fetchall()
 
-    # --- Vaults (Visual Savings) ---
     def get_vaults(self, user_id):
         self.cursor.execute("SELECT vault_id, name, target_amount, current_amount, status FROM vaults WHERE user_id=?", (user_id,))
         return self.cursor.fetchall()
@@ -330,7 +327,6 @@ class BankCore:
             self.conn.rollback()
             return False, str(e)
 
-    # --- Credit Engine (Dynamic Pricing) ---
     def get_dynamic_rate(self, user_id):
         score = self.get_credit_score(user_id)
         if score >= 750: return 0.055
@@ -407,7 +403,6 @@ class BankCore:
             self.conn.rollback()
             return False, str(e)
 
-    # --- Wealth & Cards ---
     def get_card(self, user_id):
         self.cursor.execute("SELECT card_id, card_number, expiry, cvv, status FROM cards WHERE user_id=?", (user_id,))
         return self.cursor.fetchone()
@@ -470,7 +465,6 @@ class BankCore:
             self.conn.rollback()
             return False, str(e)
 
-    # --- Admin & Audit Logging ---
     def log_audit(self, admin_id, action, details):
         self.cursor.execute("INSERT INTO audit_logs (admin_id, action, details) VALUES (?, ?, ?)", (admin_id, action, details))
         self.conn.commit()
@@ -515,7 +509,6 @@ class BankCore:
         ''')
         return self.cursor.fetchall()
 
-    # --- Batch Processor (Time Skip) ---
     def simulate_month_batch(self, admin_id):
         try:
             self.conn.execute("BEGIN TRANSACTION")
@@ -603,7 +596,6 @@ class EnterpriseBankUI(ctk.CTk):
     def clear_screen(self):
         for widget in self.winfo_children(): widget.destroy()
 
-    # --- Segregated Auth Portals & 2FA ---
     def show_auth_screen(self):
         self.clear_screen()
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -736,9 +728,6 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkButton(card, text="Submit Application", command=process_registration, width=390, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(30, 10))
         ctk.CTkButton(card, text="Cancel", command=self.show_auth_screen, width=390, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 30))
 
-    # ==========================================
-    # ADMIN INTERFACE
-    # ==========================================
     def build_admin_layout(self):
         self.clear_screen()
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
@@ -925,9 +914,6 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(scroll, text=str(tgt) if tgt else "-", text_color="gray").grid(row=r+1, column=3, padx=10, pady=2, sticky="w")
             ctk.CTkLabel(scroll, text=f"{prefix}₹{amt:,.2f}", text_color=color, font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=4, padx=10, pady=2, sticky="w")
 
-    # ==========================================
-    # CUSTOMER INTERFACE
-    # ==========================================
     def build_main_layout(self):
         self.clear_screen()
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
@@ -1128,7 +1114,6 @@ class EnterpriseBankUI(ctk.CTk):
         ben_list = ["-- New Manual Transfer --"] + [f"{b[0]} ({b[1]})" for b in bens]
         target_entry = ctk.CTkComboBox(fields_frame, values=ben_list, width=400, height=40)
 
-        # --- NATIVE PLACEHOLDER BEHAVIOR ---
         p_text = "Select, type Account #, or @Username"
         target_entry.set(p_text)
         target_entry.configure(text_color="gray")
@@ -1146,7 +1131,6 @@ class EnterpriseBankUI(ctk.CTk):
         target_entry._entry.bind("<FocusIn>", clear_placeholder)
         target_entry._entry.bind("<FocusOut>", restore_placeholder)
 
-        # --- LIVE P2P AUTOCOMPLETE ---
         suggestion_frame = ctk.CTkFrame(fields_frame, fg_color=("gray90", "gray15"), border_width=1, border_color="#3498db", corner_radius=5)
 
         def select_suggestion(username):

@@ -14,7 +14,7 @@ import math
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v19.db"):
+    def __init__(self, db_name="enterprise_bank_v21_classic.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -631,7 +631,6 @@ class EnterpriseBankUI(ctk.CTk):
                 if mode == "Customer Access" and role == "admin": return self.show_toast("System Admins must use the Staff Portal.", "error")
                 if mode == "Staff Portal" and role != "admin": return self.show_toast("Insufficient privileges.", "error")
 
-                # THE FIX: Intercept standard login and trigger 2FA Engine
                 pending_data = {"id": user[0], "name": f"{user[1]} {user[2]}", "email": user[3], "phone": user[4], "role": role}
                 self.trigger_2fa_flow(pending_data)
             else:
@@ -649,10 +648,8 @@ class EnterpriseBankUI(ctk.CTk):
 
     def trigger_2fa_flow(self, user_data):
         self.clear_screen()
-        # Generate a secure 6-digit OTP
         self.current_otp = str(random.randint(100000, 999999))
 
-        # Spawn a simulated push notification / email inbox
         mail_sim = ctk.CTkToplevel(self)
         mail_sim.title("Simulated Device / Email Inbox")
         mail_sim.geometry("400x150")
@@ -662,7 +659,6 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkLabel(mail_sim, text="Your Nexus Verification Code is:", font=ctk.CTkFont(size=14)).pack()
         ctk.CTkLabel(mail_sim, text=self.current_otp, font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").pack(pady=5)
 
-        # Render the 2FA Input UI
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
         auth_frame.pack(expand=True, fill="both")
         card = ctk.CTkFrame(auth_frame, width=450, corner_radius=15)
@@ -681,7 +677,6 @@ class EnterpriseBankUI(ctk.CTk):
                 self.active_user_data = user_data
                 self.reset_timeout()
 
-                # Proceed to appropriate dashboard
                 if self.active_user_data["role"] == "admin":
                     self.build_admin_layout()
                     self.show_toast("Admin Access Granted.", "info")
@@ -699,7 +694,6 @@ class EnterpriseBankUI(ctk.CTk):
             self.show_auth_screen()
 
         ctk.CTkButton(card, text="Cancel Login", command=cancel_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
-
 
     def show_registration_screen(self):
         self.clear_screen()
@@ -931,7 +925,6 @@ class EnterpriseBankUI(ctk.CTk):
             ctk.CTkLabel(scroll, text=str(tgt) if tgt else "-", text_color="gray").grid(row=r+1, column=3, padx=10, pady=2, sticky="w")
             ctk.CTkLabel(scroll, text=f"{prefix}₹{amt:,.2f}", text_color=color, font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=4, padx=10, pady=2, sticky="w")
 
-
     # ==========================================
     # CUSTOMER INTERFACE
     # ==========================================
@@ -1034,10 +1027,8 @@ class EnterpriseBankUI(ctk.CTk):
                 modal.grab_set()
 
                 ctk.CTkLabel(modal, text=f"{action.capitalize()} Funds", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 5))
-
                 if action == "fund": helper = f"Remaining to goal: ₹{target_amt - current_amt:,.2f}"
                 else: helper = f"Available to withdraw: ₹{current_amt:,.2f}"
-
                 ctk.CTkLabel(modal, text=helper, text_color="gray").pack(pady=(0, 15))
 
                 amt_entry = ctk.CTkEntry(modal, placeholder_text="Enter Amount (₹)", width=250, height=40)
@@ -1048,7 +1039,6 @@ class EnterpriseBankUI(ctk.CTk):
                     try:
                         amt = float(amt_entry.get())
                         if amt <= 0: raise ValueError
-
                         success, msg = self.backend.manage_vault(self.active_user_data["id"], v_id, amt, action)
                         if success:
                             self.show_toast(msg, "success")
@@ -1076,28 +1066,23 @@ class EnterpriseBankUI(ctk.CTk):
                 color = "#2ecc71" if pct >= 1.0 else "#3498db"
 
                 ctk.CTkLabel(header, text=f"₹{cur:,.0f} / ₹{tgt:,.0f} ({pct_text})", text_color=color, font=ctk.CTkFont(weight="bold")).pack(side="right")
-
                 progress = ctk.CTkProgressBar(card, progress_color=color, height=12)
                 progress.pack(fill="x", pady=15)
                 progress.set(min(1.0, pct))
 
                 controls = ctk.CTkFrame(card, fg_color="transparent")
                 controls.pack(fill="x")
-
                 if stat == 'active':
                     ctk.CTkButton(controls, text="Add Funds", width=100, command=lambda x=v_id, c=cur, t=tgt: manage_v(x, "fund", c, t)).pack(side="left", padx=(0,10))
                 else:
                     ctk.CTkLabel(controls, text="Goal Reached! 🎉", text_color="#f1c40f", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(0,10))
-
                 ctk.CTkButton(controls, text="Withdraw", width=100, fg_color="transparent", border_width=1, command=lambda x=v_id, c=cur, t=tgt: manage_v(x, "withdraw", c, t)).pack(side="right")
 
         create_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray12"), corner_radius=10)
         create_frame.grid(row=1, column=0, sticky="ew", ipadx=15, ipady=15)
-
         ctk.CTkLabel(create_frame, text="Create New Vault", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=10, pady=(0, 10))
         form = ctk.CTkFrame(create_frame, fg_color="transparent")
         form.pack(fill="x", padx=10)
-
         name_entry = ctk.CTkEntry(form, placeholder_text="Goal Name (e.g. New Laptop)", width=300)
         name_entry.pack(side="left", padx=(0, 10))
         tgt_entry = ctk.CTkEntry(form, placeholder_text="Target Amount (₹)", width=200)

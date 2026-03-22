@@ -14,7 +14,7 @@ import math
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v18.db"):
+    def __init__(self, db_name="enterprise_bank_v19.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -569,6 +569,7 @@ class EnterpriseBankUI(ctk.CTk):
         self.active_user_data = {}
         self.active_accounts = {}
         self._timeout_id = None
+        self.current_otp = None
 
         self.bind_all("<Any-KeyPress>", self.reset_timeout)
         self.bind_all("<Any-Motion>", self.reset_timeout)
@@ -602,7 +603,7 @@ class EnterpriseBankUI(ctk.CTk):
     def clear_screen(self):
         for widget in self.winfo_children(): widget.destroy()
 
-    # --- Segregated Auth Portals ---
+    # --- Segregated Auth Portals & 2FA ---
     def show_auth_screen(self):
         self.clear_screen()
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -630,16 +631,9 @@ class EnterpriseBankUI(ctk.CTk):
                 if mode == "Customer Access" and role == "admin": return self.show_toast("System Admins must use the Staff Portal.", "error")
                 if mode == "Staff Portal" and role != "admin": return self.show_toast("Insufficient privileges.", "error")
 
-                self.active_user_data = {"id": user[0], "name": f"{user[1]} {user[2]}", "email": user[3], "phone": user[4], "role": role}
-                self.reset_timeout()
-
-                if role == "admin":
-                    self.build_admin_layout()
-                    self.show_toast(f"Admin Access Granted.", "info")
-                    self.backend.log_audit(self.active_user_data["id"], "LOGIN", "Admin authenticated via Staff Portal.")
-                else:
-                    self.build_main_layout()
-                    self.show_toast(f"Welcome back, {user[1]}!", "success")
+                # THE FIX: Intercept standard login and trigger 2FA Engine
+                pending_data = {"id": user[0], "name": f"{user[1]} {user[2]}", "email": user[3], "phone": user[4], "role": role}
+                self.trigger_2fa_flow(pending_data)
             else:
                 self.show_toast("Invalid credentials. Access Denied.", "error")
 
@@ -652,6 +646,60 @@ class EnterpriseBankUI(ctk.CTk):
         reg_btn = ctk.CTkButton(card, text="Create New Account", command=self.show_registration_screen, width=300, height=40, fg_color="transparent", border_width=1)
         reg_btn.pack(pady=(0, 40))
         self.auth_mode_var.trace_add("write", handle_register_btn)
+
+    def trigger_2fa_flow(self, user_data):
+        self.clear_screen()
+        # Generate a secure 6-digit OTP
+        self.current_otp = str(random.randint(100000, 999999))
+
+        # Spawn a simulated push notification / email inbox
+        mail_sim = ctk.CTkToplevel(self)
+        mail_sim.title("Simulated Device / Email Inbox")
+        mail_sim.geometry("400x150")
+        mail_sim.attributes("-topmost", True)
+
+        ctk.CTkLabel(mail_sim, text=f"New message for {user_data['email']}", text_color="gray").pack(pady=(20, 5))
+        ctk.CTkLabel(mail_sim, text="Your Nexus Verification Code is:", font=ctk.CTkFont(size=14)).pack()
+        ctk.CTkLabel(mail_sim, text=self.current_otp, font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").pack(pady=5)
+
+        # Render the 2FA Input UI
+        auth_frame = ctk.CTkFrame(self, fg_color="transparent")
+        auth_frame.pack(expand=True, fill="both")
+        card = ctk.CTkFrame(auth_frame, width=450, corner_radius=15)
+        card.pack(expand=True, pady=80, ipadx=20)
+
+        ctk.CTkLabel(card, text="Two-Factor Authentication", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(40, 10))
+        ctk.CTkLabel(card, text=f"We sent a 6-digit code to\n{user_data['email']}", text_color="gray").pack(pady=(0, 20))
+
+        otp_entry = ctk.CTkEntry(card, placeholder_text="Enter 6-Digit Code", width=300, height=45, font=ctk.CTkFont(size=20), justify="center")
+        otp_entry.pack(pady=10)
+        otp_entry.focus()
+
+        def verify_code():
+            if otp_entry.get().strip() == self.current_otp:
+                mail_sim.destroy()
+                self.active_user_data = user_data
+                self.reset_timeout()
+
+                # Proceed to appropriate dashboard
+                if self.active_user_data["role"] == "admin":
+                    self.build_admin_layout()
+                    self.show_toast("Admin Access Granted.", "info")
+                    self.backend.log_audit(self.active_user_data["id"], "LOGIN", "Admin authenticated securely via 2FA.")
+                else:
+                    self.build_main_layout()
+                    self.show_toast(f"Welcome back, {self.active_user_data['name'].split()[0]}!", "success")
+            else:
+                self.show_toast("Invalid security code.", "error")
+
+        ctk.CTkButton(card, text="Verify Identity", command=verify_code, width=300, height=45, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
+
+        def cancel_2fa():
+            mail_sim.destroy()
+            self.show_auth_screen()
+
+        ctk.CTkButton(card, text="Cancel Login", command=cancel_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
+
 
     def show_registration_screen(self):
         self.clear_screen()
@@ -960,7 +1008,6 @@ class EnterpriseBankUI(ctk.CTk):
         for type_name, data in self.active_accounts.items():
             row = ctk.CTkFrame(container, fg_color=("gray80", "gray15"), corner_radius=8)
             row.pack(fill="x", pady=5, ipady=10)
-            # THE FIX: Added width=100 and anchor="w" to perfectly align the next elements
             ctk.CTkLabel(row, text=type_name, font=ctk.CTkFont(size=16, weight="bold"), width=100, anchor="w").pack(side="left", padx=(20, 10))
             ctk.CTkLabel(row, text=f"ACC: {data['id']}", text_color="gray").pack(side="left", padx=20)
             ctk.CTkLabel(row, text=f"₹{data['bal']:,.2f}", font=ctk.CTkFont(size=20, weight="bold")).pack(side="right", padx=20)

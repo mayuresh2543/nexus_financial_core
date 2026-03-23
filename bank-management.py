@@ -485,7 +485,7 @@ class BankCore:
     def get_audit_logs(self):
         self.cursor.execute('''
             SELECT l.log_id, u.username, l.action, l.details, l.timestamp
-            FROM audit_logs l JOIN u ON l.admin_id = u.user_id
+            FROM audit_logs l JOIN users u ON l.admin_id = u.user_id
             ORDER BY l.timestamp DESC LIMIT 100
         ''')
         return self.cursor.fetchall()
@@ -692,6 +692,9 @@ Nexus Security Team
         self.clear_screen()
         self.current_otp = str(random.randint(100000, 999999))
 
+        # --- MASK THE EMAIL FOR IMMERSION ---
+        display_email = "admin@nexus.core" if user_data["role"] == "admin" else user_data["email"]
+
         # 1. RENDER LOADING UI
         load_frame = ctk.CTkFrame(self, fg_color="transparent")
         load_frame.pack(expand=True, fill="both")
@@ -700,26 +703,27 @@ Nexus Security Team
         card.pack_propagate(False)
 
         ctk.CTkLabel(card, text="Authenticating...", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(60, 10))
-        ctk.CTkLabel(card, text=f"Dispatching secure code to {user_data['email']}", text_color="gray").pack()
+        ctk.CTkLabel(card, text=f"Dispatching secure code to {display_email}", text_color="gray").pack()
 
-        # 2. START BACKGROUND THREAD
-        threading.Thread(target=self._email_worker, args=(user_data,), daemon=True).start()
+        # 2. START BACKGROUND THREAD (It will still send to the REAL email saved in the DB)
+        threading.Thread(target=self._email_worker, args=(user_data, display_email), daemon=True).start()
 
-    def _email_worker(self, user_data):
+    def _email_worker(self, user_data, display_email):
+        # Sends to the ACTUAL email address tied to the account in the database
         success, msg = self.send_real_email(user_data['email'], self.current_otp)
 
         # 3. SAFELY PUSH UI RENDER BACK TO MAIN THREAD
-        self.after(0, lambda: self._build_2fa_ui(success, msg, user_data))
+        self.after(0, lambda: self._build_2fa_ui(success, msg, user_data, display_email))
 
-    def _build_2fa_ui(self, success, msg, user_data):
+    def _build_2fa_ui(self, success, msg, user_data, display_email):
         self.clear_screen() # Clear the loading UI
 
         if not success:
             self.show_toast(msg, "error")
             print(f"\n[DEV MODE FALLBACK] - EMAIL FAILED TO SEND.")
-            print(f"[DEV MODE FALLBACK] - The OTP for {user_data['email']} is: {self.current_otp}\n")
+            print(f"[DEV MODE FALLBACK] - The OTP for {display_email} is: {self.current_otp}\n")
         else:
-            self.show_toast(f"Secure code sent to {user_data['email']}", "success")
+            self.show_toast(f"Secure code sent to {display_email}", "success")
 
         # Render the input box
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -728,7 +732,7 @@ Nexus Security Team
         card.pack(expand=True, pady=80, ipadx=20)
 
         ctk.CTkLabel(card, text="Two-Factor Authentication", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(40, 10))
-        ctk.CTkLabel(card, text=f"We sent a 6-digit code to\n{user_data['email']}", text_color="gray").pack(pady=(0, 20))
+        ctk.CTkLabel(card, text=f"We sent a 6-digit code to\n{display_email}", text_color="gray").pack(pady=(0, 20))
 
         otp_entry = ctk.CTkEntry(card, placeholder_text="Enter 6-Digit Code", width=300, height=45, font=ctk.CTkFont(size=20), justify="center")
         otp_entry.pack(pady=10)

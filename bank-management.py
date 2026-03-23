@@ -26,7 +26,7 @@ SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo"
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v24.db"):
+    def __init__(self, db_name="enterprise_bank_v25.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -140,7 +140,7 @@ class BankCore:
             self.cursor.execute('''
                 INSERT INTO users (username, pin_hash, salt, first_name, last_name, email, phone, role, credit_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', ("admin", hashed_pin, salt, "System", "Administrator", "admin@nexus.core", "0000000000", "admin", 850))
+            ''', ("admin", hashed_pin, salt, "System", "Administrator", SYSTEM_EMAIL, "0000000000", "admin", 850))
 
             admin_id = self.cursor.lastrowid
 
@@ -485,7 +485,7 @@ class BankCore:
     def get_audit_logs(self):
         self.cursor.execute('''
             SELECT l.log_id, u.username, l.action, l.details, l.timestamp
-            FROM audit_logs l JOIN users u ON l.admin_id = u.user_id
+            FROM audit_logs l JOIN u ON l.admin_id = u.user_id
             ORDER BY l.timestamp DESC LIMIT 100
         ''')
         return self.cursor.fetchall()
@@ -571,9 +571,6 @@ class EnterpriseBankUI(ctk.CTk):
         self.title("Nexus Financial Core - Enterprise")
         self.geometry("1250x850")
         self.minsize(1150, 750)
-
-        self.font_h2 = ctk.CTkFont(size=24, weight="bold")
-        self.font_body = ctk.CTkFont(size=14)
 
         self.active_user_data = {}
         self.active_accounts = {}
@@ -702,8 +699,8 @@ Nexus Security Team
         card.pack(expand=True)
         card.pack_propagate(False)
 
-        ctk.CTkLabel(card, text="Authenticating...", font=self.font_h2).pack(pady=(60, 10))
-        ctk.CTkLabel(card, text=f"Dispatching secure code to {user_data['email']}", text_color="gray", font=self.font_body).pack()
+        ctk.CTkLabel(card, text="Authenticating...", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(60, 10))
+        ctk.CTkLabel(card, text=f"Dispatching secure code to {user_data['email']}", text_color="gray").pack()
 
         # 2. START BACKGROUND THREAD
         threading.Thread(target=self._email_worker, args=(user_data,), daemon=True).start()

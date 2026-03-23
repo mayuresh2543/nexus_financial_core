@@ -127,6 +127,12 @@ class BankCore:
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (admin_id) REFERENCES users(user_id)
             );
+            CREATE TABLE IF NOT EXISTS access_logs (
+                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identifier TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         ''')
         self.conn.commit()
         self._seed_admin()
@@ -193,6 +199,15 @@ class BankCore:
                 if status == 'frozen' and role != 'admin': return "FROZEN"
                 return (user_id, first_name, last_name, email, phone, role)
         return None
+
+    def log_auth_event(self, identifier, event_type):
+        """Records authentication attempts into the access_logs table."""
+        self.cursor.execute("INSERT INTO access_logs (identifier, event_type) VALUES (?, ?)", (identifier, event_type))
+        self.conn.commit()
+
+    def get_access_logs(self, limit=100):
+        self.cursor.execute("SELECT log_id, identifier, event_type, timestamp FROM access_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
+        return self.cursor.fetchall()
 
     def get_user_accounts(self, user_id):
         self.cursor.execute("SELECT account_number, account_type, balance FROM accounts WHERE user_id=?", (user_id,))
@@ -628,17 +643,30 @@ class EnterpriseBankUI(ctk.CTk):
 
         def login():
             mode = self.auth_mode_var.get()
-            user = self.backend.authenticate(user_entry.get().strip(), pin_entry.get().strip())
+            user_input = user_entry.get().strip()
+            user = self.backend.authenticate(user_input, pin_entry.get().strip())
 
-            if user == "FROZEN": return self.show_toast("Account frozen. Contact support.", "error")
+            if user == "FROZEN":
+                self.backend.log_auth_event(user_input, "FAILED - ACCOUNT FROZEN")
+                return self.show_toast("Account frozen. Contact support.", "error")
+
             if user:
                 role = user[5]
-                if mode == "Customer Access" and role == "admin": return self.show_toast("System Admins must use the Staff Portal.", "error")
-                if mode == "Staff Portal" and role != "admin": return self.show_toast("Insufficient privileges.", "error")
+                email = user[3]
+                display_email = "admin@nexus.core" if role == "admin" else email
 
-                pending_data = {"id": user[0], "name": f"{user[1]} {user[2]}", "email": user[3], "phone": user[4], "role": role}
+                if mode == "Customer Access" and role == "admin":
+                    self.backend.log_auth_event(display_email, "FAILED - WRONG PORTAL")
+                    return self.show_toast("System Admins must use the Staff Portal.", "error")
+                if mode == "Staff Portal" and role != "admin":
+                    self.backend.log_auth_event(display_email, "FAILED - INSUFFICIENT PRIVILEGES")
+                    return self.show_toast("Insufficient privileges.", "error")
+
+                self.backend.log_auth_event(display_email, "PENDING 2FA")
+                pending_data = {"id": user[0], "name": f"{user[1]} {user[2]}", "email": email, "phone": user[4], "role": role}
                 self.trigger_2fa_flow(pending_data)
             else:
+                self.backend.log_auth_event(user_input, "FAILED - BAD CREDENTIALS")
                 self.show_toast("Invalid credentials. Access Denied.", "error")
 
         ctk.CTkButton(card, text="Authenticate", command=login, width=300, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
@@ -734,6 +762,7 @@ Nexus Security Team
 
         def verify_code():
             if otp_entry.get().strip() == self.current_otp:
+                self.backend.log_auth_event(display_email, "SUCCESS")
                 self.active_user_data = user_data
                 self.reset_timeout()
 
@@ -745,6 +774,7 @@ Nexus Security Team
                     self.build_main_layout()
                     self.show_toast(f"Welcome back, {self.active_user_data['name'].split()[0]}!", "success")
             else:
+                self.backend.log_auth_event(display_email, "FAILED - BAD 2FA CODE")
                 self.show_toast("Invalid security code.", "error")
 
         ctk.CTkButton(card, text="Verify Identity", command=verify_code, width=300, height=45, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
@@ -918,17 +948,24 @@ Nexus Security Team
         self.clear_screen()
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(6, weight=1)
+        self.sidebar.grid_rowconfigure(7, weight=1)
         ctk.CTkLabel(self.sidebar, text="NEXUS ADMIN", font=ctk.CTkFont(size=20, weight="bold"), text_color="#e74c3c").grid(row=0, column=0, padx=20, pady=(30, 30))
 
-        nav_btns = [("Global Overview", self.view_admin_overview), ("Customer Directory", self.view_admin_users), ("System Audit Logs", self.view_admin_audit)]
-        for i, (text, command) in enumerate(nav_btns): ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
+        nav_btns = [
+            ("Global Overview", self.view_admin_overview),
+            ("Customer Directory", self.view_admin_users),
+            ("System Audit Logs", self.view_admin_audit),
+            ("Access Logs", self.view_admin_access_logs)
+        ]
+
+        for i, (text, command) in enumerate(nav_btns):
+            ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
 
         def manual_logout():
             self.backend.log_audit(self.active_user_data["id"], "LOGOUT", "Admin signed out.")
             self.active_user_data = {}; self.show_auth_screen(); self.auth_mode_var.set("Staff Portal"); self.show_toast("Logged out of Admin.", "info")
 
-        ctk.CTkButton(self.sidebar, text="Terminate Session", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=7, column=0, padx=20, pady=20, sticky="ew")
+        ctk.CTkButton(self.sidebar, text="Terminate Session", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=8, column=0, padx=20, pady=20, sticky="ew")
 
         self.content_area = ctk.CTkFrame(self, fg_color="transparent")
         self.content_area.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
@@ -1025,6 +1062,27 @@ Nexus Security Team
             ctk.CTkLabel(scroll, text=usr).grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(scroll, text=action, text_color="#f39c12", font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
             ctk.CTkLabel(scroll, text=det).grid(row=r+1, column=4, padx=15, pady=5, sticky="w")
+
+    def view_admin_access_logs(self):
+        container = self.set_admin_content("System Access Logs")
+        logs = self.backend.get_access_logs()
+
+        scroll = ctk.CTkScrollableFrame(container)
+        scroll.pack(fill="both", expand=True)
+
+        headers = ["Log ID", "Timestamp", "Identifier / Email", "Auth Event Status"]
+        for i, h in enumerate(headers): ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
+
+        for r, log in enumerate(logs):
+            l_id, ident, event_type, ts = log
+            fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M:%S')
+
+            color = "#2ecc71" if event_type == "SUCCESS" else "#e74c3c" if "FAILED" in event_type else "#f39c12"
+
+            ctk.CTkLabel(scroll, text=str(l_id)).grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
+            ctk.CTkLabel(scroll, text=fmt_date, text_color="gray").grid(row=r+1, column=1, padx=15, pady=5, sticky="w")
+            ctk.CTkLabel(scroll, text=ident).grid(row=r+1, column=2, padx=15, pady=5, sticky="w")
+            ctk.CTkLabel(scroll, text=event_type, text_color=color, font=ctk.CTkFont(weight="bold")).grid(row=r+1, column=3, padx=15, pady=5, sticky="w")
 
     def _export_admin_csv(self):
         report_data = self.backend.get_all_users_with_balances()

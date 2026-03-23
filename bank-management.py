@@ -10,23 +10,23 @@ import csv
 from fpdf import FPDF
 import math
 
-# --- NEW: Real Email SMTP Libraries ---
+# Real Email SMTP & Threading Libraries
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import threading
 
 # ==========================================
-# LIVE SYSTEM CREDENTIALS (TODO: UPDATE THESE)
+# LIVE SYSTEM CREDENTIALS
 # ==========================================
 SYSTEM_EMAIL = "mayuresh.nanal.sscmr@gmail.com"
 SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo"
-
 
 # ==========================================
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v23.db"):
+    def __init__(self, db_name="enterprise_bank_v24.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -572,6 +572,9 @@ class EnterpriseBankUI(ctk.CTk):
         self.geometry("1250x850")
         self.minsize(1150, 750)
 
+        self.font_h2 = ctk.CTkFont(size=24, weight="bold")
+        self.font_body = ctk.CTkFont(size=14)
+
         self.active_user_data = {}
         self.active_accounts = {}
         self._timeout_id = None
@@ -651,7 +654,7 @@ class EnterpriseBankUI(ctk.CTk):
         reg_btn.pack(pady=(0, 40))
         self.auth_mode_var.trace_add("write", handle_register_btn)
 
-    # --- NEW: Real SMTP Email Logic ---
+    # --- EMAIL TRANSPORT & THREADING LOGIC ---
     def send_real_email(self, receiver_email, otp):
         if SYSTEM_EMAIL == "your_email@gmail.com" or SYSTEM_APP_PASSWORD == "your_app_password":
             return False, "Developer Error: Setup SYSTEM_EMAIL and SYSTEM_APP_PASSWORD at the top of the file."
@@ -676,7 +679,6 @@ Nexus Security Team
         msg.attach(MIMEText(body, 'plain'))
 
         try:
-            # Using Google's SMTP server on port 587
             server = smtplib.SMTP('smtp.gmail.com', 587)
             server.starttls()
             server.login(SYSTEM_EMAIL, SYSTEM_APP_PASSWORD)
@@ -693,30 +695,43 @@ Nexus Security Team
         self.clear_screen()
         self.current_otp = str(random.randint(100000, 999999))
 
-        # --- FIRE THE ACTUAL EMAIL ---
-        self.show_toast(f"Sending secure code to {user_data['email']}...", "info")
+        # 1. RENDER LOADING UI
+        load_frame = ctk.CTkFrame(self, fg_color="transparent")
+        load_frame.pack(expand=True, fill="both")
+        card = ctk.CTkFrame(load_frame, width=450, height=200, corner_radius=15)
+        card.pack(expand=True)
+        card.pack_propagate(False)
 
-        # We do this slightly artificially synchronous here for the prototype.
-        # In a massive app, you'd want this on a background thread so the UI doesn't freeze for 2 seconds.
+        ctk.CTkLabel(card, text="Authenticating...", font=self.font_h2).pack(pady=(60, 10))
+        ctk.CTkLabel(card, text=f"Dispatching secure code to {user_data['email']}", text_color="gray", font=self.font_body).pack()
+
+        # 2. START BACKGROUND THREAD
+        threading.Thread(target=self._email_worker, args=(user_data,), daemon=True).start()
+
+    def _email_worker(self, user_data):
         success, msg = self.send_real_email(user_data['email'], self.current_otp)
+
+        # 3. SAFELY PUSH UI RENDER BACK TO MAIN THREAD
+        self.after(0, lambda: self._build_2fa_ui(success, msg, user_data))
+
+    def _build_2fa_ui(self, success, msg, user_data):
+        self.clear_screen() # Clear the loading UI
 
         if not success:
             self.show_toast(msg, "error")
-            # If email fails (like you haven't set up the password yet), fallback to terminal print for dev mode.
             print(f"\n[DEV MODE FALLBACK] - EMAIL FAILED TO SEND.")
             print(f"[DEV MODE FALLBACK] - The OTP for {user_data['email']} is: {self.current_otp}\n")
         else:
             self.show_toast(f"Secure code sent to {user_data['email']}", "success")
 
-
-        # Render the 2FA UI
+        # Render the input box
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
         auth_frame.pack(expand=True, fill="both")
         card = ctk.CTkFrame(auth_frame, width=450, corner_radius=15)
         card.pack(expand=True, pady=80, ipadx=20)
 
         ctk.CTkLabel(card, text="Two-Factor Authentication", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(40, 10))
-        ctk.CTkLabel(card, text=f"We emailed a 6-digit code to\n{user_data['email']}", text_color="gray").pack(pady=(0, 20))
+        ctk.CTkLabel(card, text=f"We sent a 6-digit code to\n{user_data['email']}", text_color="gray").pack(pady=(0, 20))
 
         otp_entry = ctk.CTkEntry(card, placeholder_text="Enter 6-Digit Code", width=300, height=45, font=ctk.CTkFont(size=20), justify="center")
         otp_entry.pack(pady=10)

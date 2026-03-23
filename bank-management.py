@@ -20,7 +20,7 @@ import threading
 # LIVE SYSTEM CREDENTIALS
 # ==========================================
 SYSTEM_EMAIL = "mayuresh.nanal.sscmr@gmail.com"
-SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo"
+SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo" # Be sure to revoke this if posting publicly!
 
 # ==========================================
 # Core Backend: Fintech Enterprise Engine
@@ -705,7 +705,7 @@ Nexus Security Team
         ctk.CTkLabel(card, text="Authenticating...", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(60, 10))
         ctk.CTkLabel(card, text=f"Dispatching secure code to {display_email}", text_color="gray").pack()
 
-        # 2. START BACKGROUND THREAD (It will still send to the REAL email saved in the DB)
+        # 2. START BACKGROUND THREAD
         threading.Thread(target=self._email_worker, args=(user_data, display_email), daemon=True).start()
 
     def _email_worker(self, user_data, display_email):
@@ -716,7 +716,7 @@ Nexus Security Team
         self.after(0, lambda: self._build_2fa_ui(success, msg, user_data, display_email))
 
     def _build_2fa_ui(self, success, msg, user_data, display_email):
-        self.clear_screen() # Clear the loading UI
+        self.clear_screen()
 
         if not success:
             self.show_toast(msg, "error")
@@ -725,7 +725,6 @@ Nexus Security Team
         else:
             self.show_toast(f"Secure code sent to {display_email}", "success")
 
-        # Render the input box
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
         auth_frame.pack(expand=True, fill="both")
         card = ctk.CTkFrame(auth_frame, width=450, corner_radius=15)
@@ -760,6 +759,70 @@ Nexus Security Team
 
         ctk.CTkButton(card, text="Cancel Login", command=cancel_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
 
+    # --- NEW: REGISTRATION 2FA FLOW ---
+    def trigger_registration_2fa_flow(self, reg_data):
+        self.clear_screen()
+        self.current_otp = str(random.randint(100000, 999999))
+        display_email = reg_data["email"]
+
+        load_frame = ctk.CTkFrame(self, fg_color="transparent")
+        load_frame.pack(expand=True, fill="both")
+        card = ctk.CTkFrame(load_frame, width=450, height=200, corner_radius=15)
+        card.pack(expand=True)
+        card.pack_propagate(False)
+
+        ctk.CTkLabel(card, text="Verifying Email...", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(60, 10))
+        ctk.CTkLabel(card, text=f"Dispatching secure code to {display_email}", text_color="gray").pack()
+
+        threading.Thread(target=self._reg_email_worker, args=(reg_data, display_email), daemon=True).start()
+
+    def _reg_email_worker(self, reg_data, display_email):
+        success, msg = self.send_real_email(display_email, self.current_otp)
+        self.after(0, lambda: self._build_reg_2fa_ui(success, msg, reg_data, display_email))
+
+    def _build_reg_2fa_ui(self, success, msg, reg_data, display_email):
+        self.clear_screen()
+
+        if not success:
+            self.show_toast(msg, "error")
+            print(f"\n[DEV MODE FALLBACK] - EMAIL FAILED TO SEND.")
+            print(f"[DEV MODE FALLBACK] - The OTP for {display_email} is: {self.current_otp}\n")
+        else:
+            self.show_toast(f"Verification code sent to {display_email}", "success")
+
+        auth_frame = ctk.CTkFrame(self, fg_color="transparent")
+        auth_frame.pack(expand=True, fill="both")
+        card = ctk.CTkFrame(auth_frame, width=450, corner_radius=15)
+        card.pack(expand=True, pady=80, ipadx=20)
+
+        ctk.CTkLabel(card, text="Verify Your Email", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(40, 10))
+        ctk.CTkLabel(card, text=f"We sent a 6-digit code to\n{display_email}", text_color="gray").pack(pady=(0, 20))
+
+        otp_entry = ctk.CTkEntry(card, placeholder_text="Enter 6-Digit Code", width=300, height=45, font=ctk.CTkFont(size=20), justify="center")
+        otp_entry.pack(pady=10)
+        otp_entry.focus()
+
+        def verify_code():
+            if otp_entry.get().strip() == self.current_otp:
+                # ONLY commit to the database if the OTP matches
+                success_db, msg_db = self.backend.register_user(reg_data)
+                if success_db:
+                    self.show_auth_screen()
+                    self.show_toast("Account verified and created! Welcome to Nexus.", "success")
+                else:
+                    # E.g., username taken, etc.
+                    self.show_auth_screen()
+                    self.show_toast(msg_db, "error")
+            else:
+                self.show_toast("Invalid verification code.", "error")
+
+        ctk.CTkButton(card, text="Verify & Create Account", command=verify_code, width=300, height=45, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
+
+        def cancel_reg_2fa():
+            self.show_registration_screen()
+
+        ctk.CTkButton(card, text="Cancel Registration", command=cancel_reg_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
+
     def show_registration_screen(self):
         self.clear_screen()
         reg_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -792,11 +855,8 @@ Nexus Security Team
             if not data["pin"].isdigit() or not (4 <= len(data["pin"]) <= 6): return self.show_toast("PIN must be 4-6 digits.", "error")
             if data["pin"] != confirm_pin_entry.get().strip(): return self.show_toast("PINs do not match.", "error")
 
-            success, msg = self.backend.register_user(data)
-            if success:
-                self.show_auth_screen()
-                self.show_toast("Account created! Welcome to Nexus.", "success")
-            else: self.show_toast(msg, "error")
+            # Fire off the OTP sequence instead of saving immediately
+            self.trigger_registration_2fa_flow(data)
 
         ctk.CTkButton(card, text="Submit Application", command=process_registration, width=390, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(30, 10))
         ctk.CTkButton(card, text="Cancel", command=self.show_auth_screen, width=390, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 30))

@@ -10,11 +10,23 @@ import csv
 from fpdf import FPDF
 import math
 
+# --- NEW: Real Email SMTP Libraries ---
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# ==========================================
+# LIVE SYSTEM CREDENTIALS (TODO: UPDATE THESE)
+# ==========================================
+SYSTEM_EMAIL = "mayuresh.nanal.sscmr@gmail.com"
+SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo"
+
+
 # ==========================================
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v22.db"):
+    def __init__(self, db_name="enterprise_bank_v23.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -229,6 +241,7 @@ class BankCore:
     def process_transaction(self, sender_acc, amount, txn_type, category='General', receiver_acc=None):
         try:
             self.conn.execute("BEGIN TRANSACTION")
+
             if txn_type in ['Withdrawal', 'Transfer']:
                 self.cursor.execute("SELECT status FROM cards WHERE account_number=?", (sender_acc,))
                 card_stat = self.cursor.fetchone()
@@ -638,26 +651,72 @@ class EnterpriseBankUI(ctk.CTk):
         reg_btn.pack(pady=(0, 40))
         self.auth_mode_var.trace_add("write", handle_register_btn)
 
+    # --- NEW: Real SMTP Email Logic ---
+    def send_real_email(self, receiver_email, otp):
+        if SYSTEM_EMAIL == "your_email@gmail.com" or SYSTEM_APP_PASSWORD == "your_app_password":
+            return False, "Developer Error: Setup SYSTEM_EMAIL and SYSTEM_APP_PASSWORD at the top of the file."
+
+        msg = MIMEMultipart()
+        msg['From'] = f"Nexus Financial Core <{SYSTEM_EMAIL}>"
+        msg['To'] = receiver_email
+        msg['Subject'] = "Your Nexus Security Code"
+
+        body = f"""
+Hello,
+
+Your Nexus Financial Core verification code is: {otp}
+
+Please enter this 6-digit code to securely access your account. This code will expire shortly.
+
+If you did not request this login, please contact Nexus support immediately.
+
+Securely,
+Nexus Security Team
+        """
+        msg.attach(MIMEText(body, 'plain'))
+
+        try:
+            # Using Google's SMTP server on port 587
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(SYSTEM_EMAIL, SYSTEM_APP_PASSWORD)
+            text = msg.as_string()
+            server.sendmail(SYSTEM_EMAIL, receiver_email, text)
+            server.quit()
+            return True, "Code sent successfully."
+        except smtplib.SMTPAuthenticationError:
+            return False, "SMTP Auth Failed. Did you use an App Password?"
+        except Exception as e:
+            return False, f"Network Error: {e}"
+
     def trigger_2fa_flow(self, user_data):
         self.clear_screen()
         self.current_otp = str(random.randint(100000, 999999))
 
-        mail_sim = ctk.CTkToplevel(self)
-        mail_sim.title("Simulated Device / Email Inbox")
-        mail_sim.geometry("400x150")
-        mail_sim.attributes("-topmost", True)
+        # --- FIRE THE ACTUAL EMAIL ---
+        self.show_toast(f"Sending secure code to {user_data['email']}...", "info")
 
-        ctk.CTkLabel(mail_sim, text=f"New message for {user_data['email']}", text_color="gray").pack(pady=(20, 5))
-        ctk.CTkLabel(mail_sim, text="Your Nexus Verification Code is:", font=ctk.CTkFont(size=14)).pack()
-        ctk.CTkLabel(mail_sim, text=self.current_otp, font=ctk.CTkFont(size=24, weight="bold"), text_color="#3498db").pack(pady=5)
+        # We do this slightly artificially synchronous here for the prototype.
+        # In a massive app, you'd want this on a background thread so the UI doesn't freeze for 2 seconds.
+        success, msg = self.send_real_email(user_data['email'], self.current_otp)
 
+        if not success:
+            self.show_toast(msg, "error")
+            # If email fails (like you haven't set up the password yet), fallback to terminal print for dev mode.
+            print(f"\n[DEV MODE FALLBACK] - EMAIL FAILED TO SEND.")
+            print(f"[DEV MODE FALLBACK] - The OTP for {user_data['email']} is: {self.current_otp}\n")
+        else:
+            self.show_toast(f"Secure code sent to {user_data['email']}", "success")
+
+
+        # Render the 2FA UI
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
         auth_frame.pack(expand=True, fill="both")
         card = ctk.CTkFrame(auth_frame, width=450, corner_radius=15)
         card.pack(expand=True, pady=80, ipadx=20)
 
         ctk.CTkLabel(card, text="Two-Factor Authentication", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(40, 10))
-        ctk.CTkLabel(card, text=f"We sent a 6-digit code to\n{user_data['email']}", text_color="gray").pack(pady=(0, 20))
+        ctk.CTkLabel(card, text=f"We emailed a 6-digit code to\n{user_data['email']}", text_color="gray").pack(pady=(0, 20))
 
         otp_entry = ctk.CTkEntry(card, placeholder_text="Enter 6-Digit Code", width=300, height=45, font=ctk.CTkFont(size=20), justify="center")
         otp_entry.pack(pady=10)
@@ -665,7 +724,6 @@ class EnterpriseBankUI(ctk.CTk):
 
         def verify_code():
             if otp_entry.get().strip() == self.current_otp:
-                mail_sim.destroy()
                 self.active_user_data = user_data
                 self.reset_timeout()
 
@@ -682,7 +740,6 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkButton(card, text="Verify Identity", command=verify_code, width=300, height=45, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
 
         def cancel_2fa():
-            mail_sim.destroy()
             self.show_auth_screen()
 
         ctk.CTkButton(card, text="Cancel Login", command=cancel_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))

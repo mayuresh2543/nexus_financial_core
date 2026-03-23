@@ -688,14 +688,13 @@ Nexus Security Team
         except Exception as e:
             return False, f"Network Error: {e}"
 
+    # --- LOGIN 2FA FLOW ---
     def trigger_2fa_flow(self, user_data):
         self.clear_screen()
         self.current_otp = str(random.randint(100000, 999999))
 
-        # --- MASK THE EMAIL FOR IMMERSION ---
         display_email = "admin@nexus.core" if user_data["role"] == "admin" else user_data["email"]
 
-        # 1. RENDER LOADING UI
         load_frame = ctk.CTkFrame(self, fg_color="transparent")
         load_frame.pack(expand=True, fill="both")
         card = ctk.CTkFrame(load_frame, width=450, height=200, corner_radius=15)
@@ -705,14 +704,10 @@ Nexus Security Team
         ctk.CTkLabel(card, text="Authenticating...", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=(60, 10))
         ctk.CTkLabel(card, text=f"Dispatching secure code to {display_email}", text_color="gray").pack()
 
-        # 2. START BACKGROUND THREAD
         threading.Thread(target=self._email_worker, args=(user_data, display_email), daemon=True).start()
 
     def _email_worker(self, user_data, display_email):
-        # Sends to the ACTUAL email address tied to the account in the database
         success, msg = self.send_real_email(user_data['email'], self.current_otp)
-
-        # 3. SAFELY PUSH UI RENDER BACK TO MAIN THREAD
         self.after(0, lambda: self._build_2fa_ui(success, msg, user_data, display_email))
 
     def _build_2fa_ui(self, success, msg, user_data, display_email):
@@ -759,7 +754,7 @@ Nexus Security Team
 
         ctk.CTkButton(card, text="Cancel Login", command=cancel_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
 
-    # --- NEW: REGISTRATION 2FA FLOW ---
+    # --- REGISTRATION 2FA FLOW ---
     def trigger_registration_2fa_flow(self, reg_data):
         self.clear_screen()
         self.current_otp = str(random.randint(100000, 999999))
@@ -804,13 +799,11 @@ Nexus Security Team
 
         def verify_code():
             if otp_entry.get().strip() == self.current_otp:
-                # ONLY commit to the database if the OTP matches
                 success_db, msg_db = self.backend.register_user(reg_data)
                 if success_db:
                     self.show_auth_screen()
                     self.show_toast("Account verified and created! Welcome to Nexus.", "success")
                 else:
-                    # E.g., username taken, etc.
                     self.show_auth_screen()
                     self.show_toast(msg_db, "error")
             else:
@@ -822,6 +815,67 @@ Nexus Security Team
             self.show_registration_screen()
 
         ctk.CTkButton(card, text="Cancel Registration", command=cancel_reg_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
+
+    # --- TRANSACTION 2FA FLOW ---
+    def trigger_transaction_2fa_flow(self, txn_args):
+        self.current_otp = str(random.randint(100000, 999999))
+        display_email = self.active_user_data["email"]
+
+        modal = ctk.CTkToplevel(self)
+        modal.title("Authorize Transaction")
+        modal.geometry("400x350")
+        modal.resizable(False, False)
+        modal.attributes("-topmost", True)
+        modal.grab_set()
+
+        ctk.CTkLabel(modal, text="Verifying Identity...", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(30, 10))
+        status_label = ctk.CTkLabel(modal, text=f"Dispatching code to {display_email}", text_color="gray")
+        status_label.pack(pady=(0, 20))
+
+        threading.Thread(target=self._txn_email_worker, args=(display_email, modal, status_label, txn_args), daemon=True).start()
+
+    def _txn_email_worker(self, display_email, modal, status_label, txn_args):
+        success, msg = self.send_real_email(display_email, self.current_otp)
+        self.after(0, lambda: self._build_txn_2fa_ui(success, msg, modal, status_label, txn_args, display_email))
+
+    def _build_txn_2fa_ui(self, success, msg, modal, status_label, txn_args, display_email):
+        if not success:
+            self.show_toast(msg, "error")
+            print(f"\n[DEV MODE FALLBACK] - EMAIL FAILED TO SEND.")
+            print(f"[DEV MODE FALLBACK] - The OTP is: {self.current_otp}\n")
+            status_label.configure(text="Failed to send code. Check console.", text_color="#e74c3c")
+        else:
+            status_label.configure(text=f"6-digit code sent to {display_email}", text_color="#2ecc71")
+
+        otp_entry = ctk.CTkEntry(modal, placeholder_text="Enter 6-Digit Code", width=250, height=45, font=ctk.CTkFont(size=20), justify="center")
+        otp_entry.pack(pady=10)
+        otp_entry.focus()
+
+        def verify_code():
+            if otp_entry.get().strip() == self.current_otp:
+                modal.destroy()
+
+                src_id, amt, txn_type, category, tgt_id = txn_args
+
+                if txn_type == "Transfer":
+                    success_txn, msg_txn = self.backend.process_transaction(src_id, amt, 'Transfer', category, tgt_id)
+                else:
+                    db_txn = "Deposit" if txn_type == "Deposit" else "Withdrawal"
+                    success_txn, msg_txn = self.backend.process_transaction(src_id, amt, db_txn, category, src_id if db_txn == 'Deposit' else None)
+
+                if success_txn:
+                    if txn_type == 'Transfer' and msg_txn != "Transaction Successful":
+                        self.show_toast(f"Routed ₹{amt:,.2f} to {msg_txn}", "success")
+                    else:
+                        self.show_toast(f"Processed ₹{amt:,.2f}.", "success")
+                    self.view_transfers()
+                else:
+                    self.show_toast(msg_txn, "error")
+            else:
+                self.show_toast("Invalid security code.", "error")
+
+        ctk.CTkButton(modal, text="Authorize Transfer", command=verify_code, width=250, height=45, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
+        ctk.CTkButton(modal, text="Cancel", command=modal.destroy, width=250, height=35, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack()
 
     def show_registration_screen(self):
         self.clear_screen()
@@ -855,7 +909,6 @@ Nexus Security Team
             if not data["pin"].isdigit() or not (4 <= len(data["pin"]) <= 6): return self.show_toast("PIN must be 4-6 digits.", "error")
             if data["pin"] != confirm_pin_entry.get().strip(): return self.show_toast("PINs do not match.", "error")
 
-            # Fire off the OTP sequence instead of saving immediately
             self.trigger_registration_2fa_flow(data)
 
         ctk.CTkButton(card, text="Submit Application", command=process_registration, width=390, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(30, 10))
@@ -1408,19 +1461,12 @@ Nexus Security Team
                         if not self.backend.verify_account(tgt_id): raise ValueError("Target account does not exist.")
 
                     if tgt_id == src_id: raise ValueError("Cannot route to originating account.")
-                    success, msg = self.backend.process_transaction(src_id, amt, 'Transfer', category, tgt_id)
-                else:
-                    db_txn = "Deposit" if txn_type == "Deposit" else "Withdrawal"
-                    success, msg = self.backend.process_transaction(src_id, amt, db_txn, category, src_id if db_txn == 'Deposit' else None)
 
-                if success:
-                    if txn_type == 'Transfer' and msg != "Transaction Successful":
-                        self.show_toast(f"Routed ₹{amt:,.2f} to {msg}", "success")
-                    else:
-                        self.show_toast(f"Processed ₹{amt:,.2f}.", "success")
-                    amt_entry.delete(0, 'end')
+                    self.trigger_transaction_2fa_flow((src_id, amt, txn_type, category, tgt_id))
+
                 else:
-                    self.show_toast(msg, "error")
+                    self.trigger_transaction_2fa_flow((src_id, amt, txn_type, category, None))
+
             except ValueError as e:
                 self.show_toast(str(e), "error")
 

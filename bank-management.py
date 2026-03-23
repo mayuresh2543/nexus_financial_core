@@ -20,13 +20,13 @@ import threading
 # LIVE SYSTEM CREDENTIALS
 # ==========================================
 SYSTEM_EMAIL = "mayuresh.nanal.sscmr@gmail.com"
-SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo" # Be sure to revoke this if posting publicly!
+SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo" # 🚨 Revoke this App Password if making this code public!
 
 # ==========================================
 # Core Backend: Fintech Enterprise Engine
 # ==========================================
 class BankCore:
-    def __init__(self, db_name="enterprise_bank_v25.db"):
+    def __init__(self, db_name="enterprise_bank_v26.db"):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
@@ -46,7 +46,7 @@ class BankCore:
                 role TEXT DEFAULT 'customer',
                 status TEXT DEFAULT 'active',
                 credit_score INTEGER DEFAULT 650,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime'))
             );
             CREATE TABLE IF NOT EXISTS accounts (
                 account_number INTEGER PRIMARY KEY,
@@ -62,7 +62,7 @@ class BankCore:
                 target_amount REAL NOT NULL,
                 current_amount REAL DEFAULT 0.0,
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
             CREATE TABLE IF NOT EXISTS cards (
@@ -85,7 +85,7 @@ class BankCore:
                 duration_months INTEGER NOT NULL,
                 maturity_date TIMESTAMP NOT NULL,
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (user_id) REFERENCES users(user_id),
                 FOREIGN KEY (linked_account) REFERENCES accounts(account_number)
             );
@@ -97,7 +97,7 @@ class BankCore:
                 amount REAL NOT NULL,
                 balance_after REAL NOT NULL,
                 target_account INTEGER,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                timestamp TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (account_number) REFERENCES accounts(account_number)
             );
             CREATE TABLE IF NOT EXISTS beneficiaries (
@@ -116,7 +116,7 @@ class BankCore:
                 emi_amount REAL NOT NULL,
                 balance_remaining REAL NOT NULL,
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
             CREATE TABLE IF NOT EXISTS audit_logs (
@@ -124,14 +124,14 @@ class BankCore:
                 admin_id INTEGER,
                 action TEXT NOT NULL,
                 details TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                timestamp TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (admin_id) REFERENCES users(user_id)
             );
             CREATE TABLE IF NOT EXISTS access_logs (
                 log_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 identifier TEXT NOT NULL,
                 event_type TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                timestamp TIMESTAMP DEFAULT (datetime('now', 'localtime'))
             );
         ''')
         self.conn.commit()

@@ -652,6 +652,31 @@ class EnterpriseBankUI(ctk.CTk):
         for widget in self.winfo_children():
             widget.destroy()
 
+    # --- GENERAL EMAIL ALERT SYSTEM ---
+    def send_background_alert(self, receiver_email, subject, body):
+        """Sends an alert email without blocking the UI thread."""
+        if not SYSTEM_EMAIL or SYSTEM_EMAIL == "your_email@gmail.com":
+            print("Alert Email Skipped: Credentials not configured.")
+            return
+
+        def _send():
+            msg = MIMEMultipart()
+            msg['From'] = f"Nexus Financial Alerts <{SYSTEM_EMAIL}>"
+            msg['To'] = receiver_email
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'plain'))
+
+            try:
+                server = smtplib.SMTP('smtp.gmail.com', 587)
+                server.starttls()
+                server.login(SYSTEM_EMAIL, SYSTEM_APP_PASSWORD)
+                server.sendmail(SYSTEM_EMAIL, receiver_email, msg.as_string())
+                server.quit()
+            except Exception as e:
+                print(f"Background email failed: {e}")
+
+        threading.Thread(target=_send, daemon=True).start()
+
     def show_auth_screen(self):
         self.clear_screen()
         auth_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -923,6 +948,13 @@ Nexus Security Team
                         self.show_toast(f"Routed ₹{amt:,.2f} to {msg_txn}", "success")
                     else:
                         self.show_toast(f"Processed ₹{amt:,.2f}.", "success")
+
+                    # ANTI-SPAM EMAIL LOGIC FOR TRANSACTIONS
+                    if txn_type == 'Transfer' or amt >= 1000:
+                        email_subj = f"Transaction Alert: {txn_type} processed"
+                        email_body = f"Hello {self.active_user_data['name'].split()[0]},\n\nA {txn_type.lower()} of ₹{amt:,.2f} has been successfully processed on your Nexus account.\n\nThank you,\nNexus Security Team"
+                        self.send_background_alert(self.active_user_data["email"], email_subj, email_body)
+
                     self.view_transfers()
                 else:
                     self.show_toast(msg_txn, "error")
@@ -1629,6 +1661,12 @@ Nexus Security Team
         def toggle_freeze():
             new_stat = self.backend.toggle_card(c_id, c_stat)
             self.show_toast(f"Card is now {new_stat.upper()}.", "success")
+
+            # EMAIL ALERT FOR SECURITY
+            subj = "Security Alert: Card Status Changed"
+            body = f"Hello {self.active_user_data['name'].split()[0]},\n\nYour Nexus Virtual Debit Card has been successfully {new_stat}.\n\nIf you did not request this change, please contact support immediately."
+            self.send_background_alert(self.active_user_data["email"], subj, body)
+
             self.view_cards()
 
         btn_state = "normal" if c_stat == 'active' else "disabled"
@@ -1709,6 +1747,12 @@ Nexus Security Team
                 success, msg = self.backend.open_fd(self.active_user_data["id"], src_id, amt, months)
                 if success:
                     self.show_toast(msg, "success")
+
+                    # EMAIL ALERT FOR FIXED DEPOSIT
+                    subj = "Fixed Deposit Successfully Locked"
+                    body = f"Hello {self.active_user_data['name'].split()[0]},\n\nYou have successfully secured a Fixed Deposit for ₹{amt:,.2f} over a {months}-month term.\n\nThank you for trusting Nexus."
+                    self.send_background_alert(self.active_user_data["email"], subj, body)
+
                     self.view_wealth()
                 else: self.show_toast(msg, "error")
             except ValueError as e:
@@ -1789,6 +1833,12 @@ Nexus Security Team
                 success, msg = self.backend.apply_for_loan(self.active_user_data["id"], amt, int(tenure_var.get()))
                 if success:
                     self.show_toast(f"Approved! ₹{amt:,.2f} routed to Checking.", "success")
+
+                    # EMAIL ALERT FOR LOAN APPROVAL
+                    subj = "Loan Application Approved"
+                    body = f"Hello {self.active_user_data['name'].split()[0]},\n\nGreat news! Your loan application for ₹{amt:,.2f} has been approved. The funds have been successfully disbursed into your Checking Account.\n\nThank you for choosing Nexus."
+                    self.send_background_alert(self.active_user_data["email"], subj, body)
+
                     self.view_credit()
                 else: self.show_toast(msg, "error")
             except ValueError as e:

@@ -907,6 +907,87 @@ Nexus Security Team
         ctk.CTkButton(modal, text="Authorize Transfer", command=verify_code, width=250, height=45, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
         ctk.CTkButton(modal, text="Cancel", command=modal.destroy, width=250, height=35, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack()
 
+    # --- QR SCANNER MODAL ---
+    def show_qr_scanner(self):
+        modal = ctk.CTkToplevel(self)
+        modal.title("Scan Nexus QR")
+        modal.geometry("400x500")
+        modal.resizable(False, False)
+        modal.attributes("-topmost", True)
+        modal.grab_set()
+
+        ctk.CTkLabel(modal, text="Align QR Code within frame", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 10))
+
+        # Simulated Camera Viewport
+        camera_frame = ctk.CTkFrame(modal, width=300, height=300, fg_color="#121212", border_width=2, border_color="#3498db")
+        camera_frame.pack(pady=10)
+        camera_frame.pack_propagate(False)
+
+        # Animated Scanning Laser
+        scan_line = ctk.CTkFrame(camera_frame, height=3, fg_color="#2ecc71")
+        scan_line.place(relx=0, rely=0.0, relwidth=1)
+
+        # Scanning Animation Loop
+        def animate_laser(direction=1, pos=0.0):
+            if not modal.winfo_exists(): return
+            pos += 0.02 * direction
+            if pos >= 0.95 or pos <= 0.0:
+                direction *= -1
+            scan_line.place(rely=pos)
+            modal.after(30, animate_laser, direction, pos)
+
+        animate_laser()
+
+        status_label = ctk.CTkLabel(modal, text="Searching for Nexus QR...", text_color="gray")
+        status_label.pack(pady=(10, 0))
+
+        ctk.CTkButton(modal, text="Cancel", fg_color="transparent", border_width=1, command=modal.destroy).pack(pady=20)
+
+        # Simulate detecting a QR code payload after a delay
+        def decode_fake_qr():
+            if not modal.winfo_exists(): return
+            status_label.configure(text="QR Detected! Decrypting payload...", text_color="#f1c40f")
+
+            # Generate a mock QR payload
+            actions = ["Transfer", "Withdraw", "Deposit"]
+            chosen_action = random.choice(actions)
+
+            payload = {
+                "action": chosen_action,
+                "amount": random.choice([500, 1500, 2500, 5000, 10000])
+            }
+
+            if chosen_action == "Transfer":
+                payload["target"] = "@nexus_merchant_hub"
+                payload["category"] = "Food & Dining"
+            else:
+                payload["target"] = f"ATM-Term-{random.randint(100,999)}"
+                payload["category"] = "General"
+
+            modal.after(800, lambda: apply_payload(payload))
+
+        def apply_payload(payload):
+            if not modal.winfo_exists(): return
+            modal.destroy()
+            self.show_toast(f"QR Scanned: {payload['action']} initialized.", "success")
+
+            # Auto-fill the Operations form
+            self.txn_type_var.set(payload['action'])
+
+            if hasattr(self, 'op_amount_entry'):
+                self.op_amount_entry.delete(0, 'end')
+                self.op_amount_entry.insert(0, str(payload['amount']))
+
+            if hasattr(self, 'op_target_entry') and payload['action'] == "Transfer":
+                self.op_target_entry.set(payload["target"])
+                self.op_target_entry.configure(text_color="white" if ctk.get_appearance_mode() == "Dark" else "black")
+
+            if hasattr(self, 'op_cat_var'):
+                self.op_cat_var.set(payload["category"])
+
+        # Trigger the fake detection after 2.5 seconds
+        modal.after(2500, decode_fake_qr)
+
     def show_registration_screen(self):
         self.clear_screen()
         reg_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -1340,7 +1421,11 @@ Nexus Security Team
 
         self.txn_type_var = ctk.StringVar(value="Transfer")
         txn_selector = ctk.CTkSegmentedButton(form_card, values=["Deposit", "Withdraw", "Transfer"], variable=self.txn_type_var, width=400, height=35)
-        txn_selector.pack(pady=(0, 20))
+        txn_selector.pack(pady=(0, 10))
+
+        # --- NEW: QR Scan Button ---
+        qr_btn = ctk.CTkButton(form_card, text="📷 Scan QR Code", fg_color="#8e44ad", hover_color="#9b59b6", width=400, height=35, font=ctk.CTkFont(weight="bold"), command=self.show_qr_scanner)
+        qr_btn.pack(pady=(0, 20))
 
         fields_frame = ctk.CTkFrame(form_card, fg_color="transparent")
         fields_frame.pack(pady=10)
@@ -1356,40 +1441,40 @@ Nexus Security Team
 
         bens = self.backend.get_beneficiaries(self.active_user_data["id"])
         ben_list = ["-- New Manual Transfer --"] + [f"{b[0]} ({b[1]})" for b in bens]
-        target_entry = ctk.CTkComboBox(fields_frame, values=ben_list, width=400, height=40)
+        self.op_target_entry = ctk.CTkComboBox(fields_frame, values=ben_list, width=400, height=40)
 
         p_text = "Select, type Account #, or @Username"
-        target_entry.set(p_text)
-        target_entry.configure(text_color="gray")
+        self.op_target_entry.set(p_text)
+        self.op_target_entry.configure(text_color="gray")
 
         def clear_placeholder(event):
-            if target_entry.get() == p_text:
-                target_entry.set("")
-                target_entry.configure(text_color="white" if ctk.get_appearance_mode() == "Dark" else "black")
+            if self.op_target_entry.get() == p_text:
+                self.op_target_entry.set("")
+                self.op_target_entry.configure(text_color="white" if ctk.get_appearance_mode() == "Dark" else "black")
 
         def restore_placeholder(event):
-            if not target_entry.get().strip():
-                target_entry.set(p_text)
-                target_entry.configure(text_color="gray")
+            if not self.op_target_entry.get().strip():
+                self.op_target_entry.set(p_text)
+                self.op_target_entry.configure(text_color="gray")
 
-        target_entry._entry.bind("<FocusIn>", clear_placeholder)
-        target_entry._entry.bind("<FocusOut>", restore_placeholder)
+        self.op_target_entry._entry.bind("<FocusIn>", clear_placeholder)
+        self.op_target_entry._entry.bind("<FocusOut>", restore_placeholder)
 
         suggestion_frame = ctk.CTkFrame(fields_frame, fg_color=("gray90", "gray15"), border_width=1, border_color="#3498db", corner_radius=5)
 
         def select_suggestion(username):
-            target_entry.set(f"@{username}")
-            target_entry.configure(text_color="white" if ctk.get_appearance_mode() == "Dark" else "black")
+            self.op_target_entry.set(f"@{username}")
+            self.op_target_entry.configure(text_color="white" if ctk.get_appearance_mode() == "Dark" else "black")
             suggestion_frame.place_forget()
 
         def handle_typing(event):
             if event.keysym in ['Up', 'Down', 'Return', 'Escape']: return
-            val = target_entry.get()
+            val = self.op_target_entry.get()
             if val.startswith("@") and len(val) > 1:
                 matches = self.backend.search_users_by_handle(val[1:])
                 for w in suggestion_frame.winfo_children(): w.destroy()
                 if matches:
-                    suggestion_frame.place(in_=target_entry, rely=1.0, relwidth=1.0, y=2)
+                    suggestion_frame.place(in_=self.op_target_entry, rely=1.0, relwidth=1.0, y=2)
                     for (u, f, l) in matches:
                         btn_text = f"@{u}   —   {f} {l}"
                         btn = ctk.CTkButton(suggestion_frame, text=btn_text, fg_color="transparent", anchor="w",
@@ -1402,15 +1487,15 @@ Nexus Security Team
             else:
                 suggestion_frame.place_forget()
 
-        target_entry._entry.bind("<KeyRelease>", handle_typing)
+        self.op_target_entry._entry.bind("<KeyRelease>", handle_typing)
 
         cat_label = ctk.CTkLabel(fields_frame, text="Spending Category", font=ctk.CTkFont(weight="bold"))
-        self.cat_var = ctk.StringVar(value="General")
-        cat_sel = ctk.CTkOptionMenu(fields_frame, values=["General", "Housing", "Food & Dining", "Entertainment", "Utilities"], variable=self.cat_var, width=400, height=40)
+        self.op_cat_var = ctk.StringVar(value="General")
+        cat_sel = ctk.CTkOptionMenu(fields_frame, values=["General", "Housing", "Food & Dining", "Entertainment", "Utilities"], variable=self.op_cat_var, width=400, height=40)
 
         ctk.CTkLabel(fields_frame, text="Amount (₹)", font=ctk.CTkFont(weight="bold")).grid(row=6, column=0, sticky="w", pady=(10, 5))
-        amt_entry = ctk.CTkEntry(fields_frame, placeholder_text="0.00", width=400, height=40, font=ctk.CTkFont(size=18))
-        amt_entry.grid(row=7, column=0, sticky="w", pady=(0, 20))
+        self.op_amount_entry = ctk.CTkEntry(fields_frame, placeholder_text="0.00", width=400, height=40, font=ctk.CTkFont(size=18))
+        self.op_amount_entry.grid(row=7, column=0, sticky="w", pady=(0, 20))
 
         def open_beneficiary_manager():
             modal = ctk.CTkToplevel(self)
@@ -1469,25 +1554,25 @@ Nexus Security Team
             if self.txn_type_var.get() == "Transfer":
                 target_header_frame.grid(row=2, column=0, sticky="ew", pady=(10, 5))
                 manage_btn.pack(side="right")
-                target_entry.grid(row=3, column=0, sticky="w", pady=(0, 15))
-                if not target_entry.get().strip() or target_entry.get() == p_text:
-                    target_entry.set(p_text)
-                    target_entry.configure(text_color="gray")
+                self.op_target_entry.grid(row=3, column=0, sticky="w", pady=(0, 15))
+                if not self.op_target_entry.get().strip() or self.op_target_entry.get() == p_text:
+                    self.op_target_entry.set(p_text)
+                    self.op_target_entry.configure(text_color="gray")
                 cat_label.grid(row=4, column=0, sticky="w", pady=(10,5))
                 cat_sel.grid(row=5, column=0, sticky="w", pady=(0, 15))
             elif self.txn_type_var.get() == "Withdraw":
                 target_header_frame.grid_remove()
                 manage_btn.pack_forget()
-                target_entry.grid_remove()
+                self.op_target_entry.grid_remove()
                 cat_label.grid(row=4, column=0, sticky="w", pady=(10,5))
                 cat_sel.grid(row=5, column=0, sticky="w", pady=(0, 15))
             else:
                 target_header_frame.grid_remove()
                 manage_btn.pack_forget()
-                target_entry.grid_remove()
+                self.op_target_entry.grid_remove()
                 cat_label.grid_remove()
                 cat_sel.grid_remove()
-                self.cat_var.set("General")
+                self.op_cat_var.set("General")
 
         self.txn_type_var.trace_add("write", update_form_state)
         update_form_state()
@@ -1495,13 +1580,13 @@ Nexus Security Team
         def execute_action():
             src_id = self.active_accounts[source_sel.get().split(" (")[0]]["id"]
             txn_type = self.txn_type_var.get()
-            category = self.cat_var.get() if txn_type != "Deposit" else "General"
+            category = self.op_cat_var.get() if txn_type != "Deposit" else "General"
             try:
-                amt = float(amt_entry.get())
+                amt = float(self.op_amount_entry.get())
                 if amt <= 0: raise ValueError("Amount must be greater than zero.")
 
                 if txn_type == "Transfer":
-                    tgt_val = target_entry.get()
+                    tgt_val = self.op_target_entry.get()
                     if tgt_val == p_text or not tgt_val.strip() or tgt_val == "-- New Manual Transfer --":
                         raise ValueError("Please select or enter a destination.")
 

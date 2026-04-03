@@ -1,30 +1,37 @@
 import customtkinter as ctk
-from tkinter import filedialog, simpledialog
+from tkinter import filedialog
 import sqlite3
 import random
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 import csv
 from fpdf import FPDF
-import math
-
-# Real Email SMTP & Threading Libraries
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import threading
+import json
+import os
 
-# ==========================================
-# LIVE SYSTEM CREDENTIALS
-# ==========================================
-SYSTEM_EMAIL = "mayuresh.nanal.sscmr@gmail.com"
-SYSTEM_APP_PASSWORD = "kyfxufradnydwkwo" # 🚨 Revoke this App Password if making this code public!
+def load_credentials():
+    default_creds = {
+        "SYSTEM_EMAIL": "your_email@gmail.com",
+        "SYSTEM_APP_PASSWORD": "your_app_password"
+    }
+    if not os.path.exists("credentials.json"):
+        with open("credentials.json", "w") as f:
+            json.dump(default_creds, f, indent=4)
+        print("Notice: 'credentials.json' was created. Please add your email and app password before running.")
+        return "", ""
 
-# ==========================================
-# Core Backend: Fintech Enterprise Engine
-# ==========================================
+    with open("credentials.json", "r") as f:
+        creds = json.load(f)
+        return creds.get("SYSTEM_EMAIL", ""), creds.get("SYSTEM_APP_PASSWORD", "")
+
+SYSTEM_EMAIL, SYSTEM_APP_PASSWORD = load_credentials()
+
 class BankCore:
     def __init__(self, db_name="enterprise_bank_v26.db"):
         self.conn = sqlite3.connect(db_name)
@@ -149,8 +156,8 @@ class BankCore:
             ''', ("admin", hashed_pin, salt, "System", "Administrator", SYSTEM_EMAIL, "0000000000", "admin", 850))
 
             admin_id = self.cursor.lastrowid
-
             acc_num = random.randint(10000000, 99999999)
+
             self.cursor.execute("INSERT INTO accounts (account_number, user_id, account_type, balance) VALUES (?, ?, ?, ?)",
                                 (acc_num, admin_id, "Checking", 0.0))
             self.conn.commit()
@@ -162,6 +169,7 @@ class BankCore:
         try:
             user_salt = secrets.token_hex(16)
             hashed_pin = self.hash_data(user_data['pin'], user_salt)
+
             self.cursor.execute('''
                 INSERT INTO users (username, pin_hash, salt, first_name, last_name, email, phone)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -169,39 +177,44 @@ class BankCore:
                   user_data['last_name'], user_data['email'], user_data['phone']))
 
             user_id = self.cursor.lastrowid
-
             chk_acc = None
+
             for acc_type in ["Checking", "Savings"]:
                 acc_num = random.randint(10000000, 99999999)
                 self.cursor.execute("INSERT INTO accounts (account_number, user_id, account_type, balance) VALUES (?, ?, ?, ?)",
                                     (acc_num, user_id, acc_type, 0.0))
-                if acc_type == "Checking": chk_acc = acc_num
+                if acc_type == "Checking":
+                    chk_acc = acc_num
 
             card_num = " ".join([str(random.randint(1000, 9999)) for _ in range(4)])
             cvv = str(random.randint(100, 999))
             exp_year = datetime.now().year + 4
             expiry = f"{datetime.now().month:02d}/{str(exp_year)[-2:]}"
+
             self.cursor.execute("INSERT INTO cards (user_id, account_number, card_number, expiry, cvv) VALUES (?, ?, ?, ?, ?)",
                                 (user_id, chk_acc, card_num, expiry, cvv))
 
             self.conn.commit()
             return True, "Account successfully provisioned."
+
         except sqlite3.IntegrityError as e:
-            if "email" in str(e).lower(): return False, "Email address is already in use."
+            if "email" in str(e).lower():
+                return False, "Email address is already in use."
             return False, "Username is already taken."
 
     def authenticate(self, username, pin):
         self.cursor.execute("SELECT user_id, pin_hash, salt, first_name, last_name, email, phone, role, status FROM users WHERE username=?", (username,))
         result = self.cursor.fetchone()
+
         if result:
             user_id, stored_hash, salt, first_name, last_name, email, phone, role, status = result
             if self.hash_data(pin, salt) == stored_hash:
-                if status == 'frozen' and role != 'admin': return "FROZEN"
+                if status == 'frozen' and role != 'admin':
+                    return "FROZEN"
                 return (user_id, first_name, last_name, email, phone, role)
         return None
 
     def log_auth_event(self, identifier, event_type):
-        """Records authentication attempts into the access_logs table."""
         self.cursor.execute("INSERT INTO access_logs (identifier, event_type) VALUES (?, ?)", (identifier, event_type))
         self.conn.commit()
 
@@ -229,7 +242,8 @@ class BankCore:
             FROM accounts a JOIN users u ON a.user_id = u.user_id WHERE a.account_number = ?
         ''', (account_number,))
         result = self.cursor.fetchone()
-        if result: return f"{result[0]} {result[1][0]}."
+        if result:
+            return f"{result[0]} {result[1][0]}."
         return None
 
     def resolve_username(self, username):
@@ -271,6 +285,7 @@ class BankCore:
 
             new_sender_bal = sender_bal - amount if txn_type in ['Withdrawal', 'Transfer', 'EMI Payment', 'FD Creation', 'Vault Funding'] else sender_bal + amount
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_sender_bal, sender_acc))
+
             self.cursor.execute("INSERT INTO transactions (account_number, txn_type, category, amount, balance_after, target_account) VALUES (?, ?, ?, ?, ?, ?)",
                                 (sender_acc, txn_type, category, amount, new_sender_bal, receiver_acc))
 
@@ -330,8 +345,10 @@ class BankCore:
             chk_acc, chk_bal = self.cursor.fetchone()
 
             if action == "fund":
-                if chk_bal < amount: raise ValueError("Insufficient funds in Checking.")
-                if cur + amount > tgt: amount = tgt - cur
+                if chk_bal < amount:
+                    raise ValueError("Insufficient funds in Checking.")
+                if cur + amount > tgt:
+                    amount = tgt - cur
 
                 new_chk = chk_bal - amount
                 new_vault = cur + amount
@@ -342,7 +359,9 @@ class BankCore:
                 self.cursor.execute("UPDATE vaults SET current_amount=?, status=? WHERE vault_id=?", (new_vault, stat, vault_id))
 
             elif action == "withdraw":
-                if cur < amount: raise ValueError("Insufficient funds in Vault.")
+                if cur < amount:
+                    raise ValueError("Insufficient funds in Vault.")
+
                 new_vault = cur - amount
                 new_chk = chk_bal + amount
                 self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_chk, chk_acc))
@@ -377,7 +396,9 @@ class BankCore:
 
             self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
             chk_data = self.cursor.fetchone()
-            if not chk_data: raise ValueError("Requires a Checking account to receive funds.")
+            if not chk_data:
+                raise ValueError("Requires a Checking account to receive funds.")
+
             chk_acc, chk_bal = chk_data
 
             self.cursor.execute('''
@@ -406,12 +427,15 @@ class BankCore:
             self.conn.execute("BEGIN TRANSACTION")
             self.cursor.execute("SELECT emi_amount, balance_remaining FROM loans WHERE loan_id=? AND status='active'", (loan_id,))
             loan_data = self.cursor.fetchone()
-            if not loan_data: raise ValueError("Loan not found or already paid off.")
+            if not loan_data:
+                raise ValueError("Loan not found or already paid off.")
+
             emi, rem_bal = loan_data
 
             self.cursor.execute("SELECT account_number, balance FROM accounts WHERE user_id=? AND account_type='Checking'", (user_id,))
             chk_acc, chk_bal = self.cursor.fetchone()
-            if chk_bal < emi: raise ValueError("Insufficient funds in Checking for EMI payment.")
+            if chk_bal < emi:
+                raise ValueError("Insufficient funds in Checking for EMI payment.")
 
             new_chk_bal = chk_bal - emi
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_chk_bal, chk_acc))
@@ -450,9 +474,12 @@ class BankCore:
             self.conn.execute("BEGIN TRANSACTION")
             self.cursor.execute("SELECT balance FROM accounts WHERE account_number=? AND user_id=?", (source_acc, user_id))
             acc_data = self.cursor.fetchone()
-            if not acc_data: raise ValueError("Invalid account selected.")
+            if not acc_data:
+                raise ValueError("Invalid account selected.")
+
             chk_bal = acc_data[0]
-            if chk_bal < amount: raise ValueError("Insufficient funds in selected account.")
+            if chk_bal < amount:
+                raise ValueError("Insufficient funds in selected account.")
 
             new_bal = chk_bal - amount
             self.cursor.execute("UPDATE accounts SET balance = ? WHERE account_number=?", (new_bal, source_acc))
@@ -476,8 +503,11 @@ class BankCore:
             self.conn.execute("BEGIN TRANSACTION")
             self.cursor.execute("SELECT principal, status, linked_account FROM fixed_deposits WHERE fd_id=? AND user_id=?", (fd_id, user_id))
             fd_data = self.cursor.fetchone()
-            if not fd_data or fd_data[1] != 'active': raise ValueError("Invalid Deposit.")
-            prin = fd_data[0]; linked_acc = fd_data[2]
+            if not fd_data or fd_data[1] != 'active':
+                raise ValueError("Invalid Deposit.")
+
+            prin = fd_data[0]
+            linked_acc = fd_data[2]
 
             self.cursor.execute("SELECT balance FROM accounts WHERE account_number=?", (linked_acc,))
             chk_bal = self.cursor.fetchone()[0]
@@ -572,10 +602,6 @@ class BankCore:
             self.conn.rollback()
             return False, str(e)
 
-
-# ==========================================
-# Frontend Architecture & UI
-# ==========================================
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
@@ -617,12 +643,14 @@ class EnterpriseBankUI(ctk.CTk):
 
     def auto_logout(self):
         if self.active_user_data:
-            self.active_user_data = {}; self.active_accounts = {}
+            self.active_user_data = {}
+            self.active_accounts = {}
             self.show_auth_screen()
             self.show_toast("Session expired due to inactivity.", "error")
 
     def clear_screen(self):
-        for widget in self.winfo_children(): widget.destroy()
+        for widget in self.winfo_children():
+            widget.destroy()
 
     def show_auth_screen(self):
         self.clear_screen()
@@ -672,17 +700,18 @@ class EnterpriseBankUI(ctk.CTk):
         ctk.CTkButton(card, text="Authenticate", command=login, width=300, height=40, font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
 
         def handle_register_btn(*args):
-            if self.auth_mode_var.get() == "Customer Access": reg_btn.pack(pady=(0, 40))
-            else: reg_btn.pack_forget()
+            if self.auth_mode_var.get() == "Customer Access":
+                reg_btn.pack(pady=(0, 40))
+            else:
+                reg_btn.pack_forget()
 
         reg_btn = ctk.CTkButton(card, text="Create New Account", command=self.show_registration_screen, width=300, height=40, fg_color="transparent", border_width=1)
         reg_btn.pack(pady=(0, 40))
         self.auth_mode_var.trace_add("write", handle_register_btn)
 
-    # --- EMAIL TRANSPORT & THREADING LOGIC ---
     def send_real_email(self, receiver_email, otp):
-        if SYSTEM_EMAIL == "your_email@gmail.com" or SYSTEM_APP_PASSWORD == "your_app_password":
-            return False, "Developer Error: Setup SYSTEM_EMAIL and SYSTEM_APP_PASSWORD at the top of the file."
+        if not SYSTEM_EMAIL or SYSTEM_EMAIL == "your_email@gmail.com":
+            return False, "Developer Error: Setup SYSTEM_EMAIL in credentials.json."
 
         msg = MIMEMultipart()
         msg['From'] = f"Nexus Financial Core <{SYSTEM_EMAIL}>"
@@ -716,7 +745,6 @@ Nexus Security Team
         except Exception as e:
             return False, f"Network Error: {e}"
 
-    # --- LOGIN 2FA FLOW ---
     def trigger_2fa_flow(self, user_data):
         self.clear_screen()
         self.current_otp = str(random.randint(100000, 999999))
@@ -784,7 +812,6 @@ Nexus Security Team
 
         ctk.CTkButton(card, text="Cancel Login", command=cancel_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
 
-    # --- REGISTRATION 2FA FLOW ---
     def trigger_registration_2fa_flow(self, reg_data):
         self.clear_screen()
         self.current_otp = str(random.randint(100000, 999999))
@@ -846,7 +873,6 @@ Nexus Security Team
 
         ctk.CTkButton(card, text="Cancel Registration", command=cancel_reg_2fa, width=300, height=40, fg_color="transparent", border_width=1, text_color=("gray10", "gray70")).pack(pady=(0, 40))
 
-    # --- TRANSACTION 2FA FLOW ---
     def trigger_transaction_2fa_flow(self, txn_args):
         self.current_otp = str(random.randint(100000, 999999))
         display_email = self.active_user_data["email"]
@@ -884,7 +910,6 @@ Nexus Security Team
         def verify_code():
             if otp_entry.get().strip() == self.current_otp:
                 modal.destroy()
-
                 src_id, amt, txn_type, category, tgt_id = txn_args
 
                 if txn_type == "Transfer":
@@ -934,10 +959,14 @@ Nexus Security Team
 
         def process_registration():
             data = {"first_name": fname_entry.get().strip(), "last_name": lname_entry.get().strip(), "email": email_entry.get().strip(), "phone": phone_entry.get().strip(), "username": user_entry.get().strip(), "pin": pin_entry.get().strip()}
-            if not all(data.values()): return self.show_toast("All fields are required.", "error")
-            if not re.match(r"[^@]+@[^@]+\.[^@]+", data["email"]): return self.show_toast("Invalid email.", "error")
-            if not data["pin"].isdigit() or not (4 <= len(data["pin"]) <= 6): return self.show_toast("PIN must be 4-6 digits.", "error")
-            if data["pin"] != confirm_pin_entry.get().strip(): return self.show_toast("PINs do not match.", "error")
+            if not all(data.values()):
+                return self.show_toast("All fields are required.", "error")
+            if not re.match(r"[^@]+@[^@]+\.[^@]+", data["email"]):
+                return self.show_toast("Invalid email.", "error")
+            if not data["pin"].isdigit() or not (4 <= len(data["pin"]) <= 6):
+                return self.show_toast("PIN must be 4-6 digits.", "error")
+            if data["pin"] != confirm_pin_entry.get().strip():
+                return self.show_toast("PINs do not match.", "error")
 
             self.trigger_registration_2fa_flow(data)
 
@@ -963,7 +992,10 @@ Nexus Security Team
 
         def manual_logout():
             self.backend.log_audit(self.active_user_data["id"], "LOGOUT", "Admin signed out.")
-            self.active_user_data = {}; self.show_auth_screen(); self.auth_mode_var.set("Staff Portal"); self.show_toast("Logged out of Admin.", "info")
+            self.active_user_data = {}
+            self.show_auth_screen()
+            self.auth_mode_var.set("Staff Portal")
+            self.show_toast("Logged out of Admin.", "info")
 
         ctk.CTkButton(self.sidebar, text="Terminate Session", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=8, column=0, padx=20, pady=20, sticky="ew")
 
@@ -974,7 +1006,8 @@ Nexus Security Team
         self.view_admin_overview()
 
     def set_admin_content(self, title):
-        for widget in self.content_area.winfo_children(): widget.destroy()
+        for widget in self.content_area.winfo_children():
+            widget.destroy()
         header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
         header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
         ctk.CTkLabel(header_frame, text=title, font=ctk.CTkFont(size=32, weight="bold")).pack(side="left")
@@ -1020,7 +1053,8 @@ Nexus Security Team
         list_frame.pack(fill="both", expand=True)
 
         headers = ["#", "Name", "Email Address", "Status", "Actions"]
-        for i, h in enumerate(headers): ctk.CTkLabel(list_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
+        for i, h in enumerate(headers):
+            ctk.CTkLabel(list_frame, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
 
         def toggle_status(uid, current_status):
             new_stat = "frozen" if current_status == "active" else "active"
@@ -1052,7 +1086,8 @@ Nexus Security Team
         scroll.pack(fill="both", expand=True)
 
         headers = ["Log ID", "Timestamp", "Admin User", "Action Type", "Details"]
-        for i, h in enumerate(headers): ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
+        for i, h in enumerate(headers):
+            ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
 
         for r, log in enumerate(logs):
             l_id, usr, action, det, ts = log
@@ -1071,12 +1106,12 @@ Nexus Security Team
         scroll.pack(fill="both", expand=True)
 
         headers = ["Log ID", "Timestamp", "Identifier / Email", "Auth Event Status"]
-        for i, h in enumerate(headers): ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
+        for i, h in enumerate(headers):
+            ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=15, pady=10, sticky="w")
 
         for r, log in enumerate(logs):
             l_id, ident, event_type, ts = log
             fmt_date = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').strftime('%b %d, %H:%M:%S')
-
             color = "#2ecc71" if event_type == "SUCCESS" else "#e74c3c" if "FAILED" in event_type else "#f39c12"
 
             ctk.CTkLabel(scroll, text=str(l_id)).grid(row=r+1, column=0, padx=15, pady=5, sticky="w")
@@ -1086,9 +1121,13 @@ Nexus Security Team
 
     def _export_admin_csv(self):
         report_data = self.backend.get_all_users_with_balances()
-        if not report_data: return self.show_toast("No user data available.", "error")
+        if not report_data:
+            return self.show_toast("No user data available.", "error")
+
         file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Save Admin Report As", initialfile=f"Nexus_Global_Report_{datetime.now().strftime('%Y%m%d')}.csv")
-        if not file_path: return
+        if not file_path:
+            return
+
         try:
             with open(file_path, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
@@ -1096,10 +1135,13 @@ Nexus Security Team
                 for row in report_data: writer.writerow(row)
             self.backend.log_audit(self.active_user_data["id"], "EXPORT", "Downloaded Global CSV Report.")
             self.show_toast("CSV Report successfully exported.", "success")
-        except Exception: self.show_toast("Failed to generate CSV.", "error")
+        except Exception:
+            self.show_toast("Failed to generate CSV.", "error")
 
     def view_admin_inspector(self, target_uid):
-        for widget in self.content_area.winfo_children(): widget.destroy()
+        for widget in self.content_area.winfo_children():
+            widget.destroy()
+
         u_info = self.backend.get_user_details(target_uid)
         if not u_info: return
         usr, fn, ln, em, ph, stat, c_score, created = u_info
@@ -1121,7 +1163,8 @@ Nexus Security Team
         for i, (lbl, val) in enumerate(details):
             ctk.CTkLabel(profile_card, text=lbl, text_color="gray", width=80, anchor="w").grid(row=0, column=i*2, padx=(10, 5), pady=5)
             c_color = "white"
-            if lbl == "Credit Score:": c_color = "#2ecc71" if int(val) >= 700 else "#f1c40f" if int(val) >= 600 else "#e74c3c"
+            if lbl == "Credit Score:":
+                c_color = "#2ecc71" if int(val) >= 700 else "#f1c40f" if int(val) >= 600 else "#e74c3c"
             ctk.CTkLabel(profile_card, text=val, text_color=c_color, font=ctk.CTkFont(weight="bold")).grid(row=0, column=(i*2)+1, padx=(0, 20), pady=5)
 
         accs = self.backend.get_user_accounts(target_uid)
@@ -1144,7 +1187,8 @@ Nexus Security Team
         scroll.pack(fill="both", expand=True)
 
         headers = ["Account", "Type", "Date/Time", "Target", "Amount"]
-        for i, h in enumerate(headers): ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=10, pady=5, sticky="w")
+        for i, h in enumerate(headers):
+            ctk.CTkLabel(scroll, text=h, font=ctk.CTkFont(weight="bold")).grid(row=0, column=i, padx=10, pady=5, sticky="w")
 
         for r, txn in enumerate(history):
             a_type, t_type, amt, bal_after, tgt, ts = txn
@@ -1182,7 +1226,9 @@ Nexus Security Team
             ctk.CTkButton(self.sidebar, text=text, command=command, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w", font=ctk.CTkFont(size=14)).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
 
         def manual_logout():
-            self.active_user_data = {}; self.show_auth_screen(); self.show_toast("Successfully logged out.", "info")
+            self.active_user_data = {}
+            self.show_auth_screen()
+            self.show_toast("Successfully logged out.", "info")
 
         ctk.CTkButton(self.sidebar, text="Sign Out", command=manual_logout, fg_color="#c0392b", hover_color="#a53125").grid(row=11, column=0, padx=20, pady=20, sticky="ew")
 
@@ -1195,7 +1241,9 @@ Nexus Security Team
         self.view_dashboard()
 
     def set_content(self, title):
-        for widget in self.content_area.winfo_children(): widget.destroy()
+        for widget in self.content_area.winfo_children():
+            widget.destroy()
+
         accs = self.backend.get_user_accounts(self.active_user_data["id"])
         self.active_accounts = {a[1]: {"id": a[0], "bal": a[2]} for a in accs}
 
@@ -1257,8 +1305,10 @@ Nexus Security Team
                 modal.grab_set()
 
                 ctk.CTkLabel(modal, text=f"{action.capitalize()} Funds", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 5))
-                if action == "fund": helper = f"Remaining to goal: ₹{target_amt - current_amt:,.2f}"
-                else: helper = f"Available to withdraw: ₹{current_amt:,.2f}"
+                if action == "fund":
+                    helper = f"Remaining to goal: ₹{target_amt - current_amt:,.2f}"
+                else:
+                    helper = f"Available to withdraw: ₹{current_amt:,.2f}"
                 ctk.CTkLabel(modal, text=helper, text_color="gray").pack(pady=(0, 15))
 
                 amt_entry = ctk.CTkEntry(modal, placeholder_text="Enter Amount (₹)", width=250, height=40)
@@ -1326,7 +1376,8 @@ Nexus Security Team
                 success, msg = self.backend.create_vault(self.active_user_data["id"], name, tgt)
                 self.show_toast(msg, "success" if success else "error")
                 self.view_vaults()
-            except ValueError: self.show_toast("Please enter a valid target amount.", "error")
+            except ValueError:
+                self.show_toast("Please enter a valid target amount.", "error")
 
         ctk.CTkButton(form, text="Create Vault", command=new_vault).pack(side="left")
 
@@ -1430,7 +1481,8 @@ Nexus Security Team
 
             def verify():
                 tgt = acc_entry.get().strip()
-                if not tgt.isdigit(): return status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
+                if not tgt.isdigit():
+                    return status_label.configure(text="Invalid numerical format.", text_color="#e74c3c")
                 existing_bens = [b[1] for b in self.backend.get_beneficiaries(self.active_user_data["id"])]
                 if int(tgt) in existing_bens:
                     status_label.configure(text="Account already in Address Book.", text_color="#e74c3c")
@@ -1519,7 +1571,6 @@ Nexus Security Team
                         if not self.backend.verify_account(tgt_id): raise ValueError("Target account does not exist.")
 
                     if tgt_id == src_id: raise ValueError("Cannot route to originating account.")
-
                     self.trigger_transaction_2fa_flow((src_id, amt, txn_type, category, tgt_id))
 
                 else:
@@ -1536,7 +1587,8 @@ Nexus Security Team
         container.grid_columnconfigure(0, weight=1)
 
         card_data = self.backend.get_card(self.active_user_data["id"])
-        if not card_data: return ctk.CTkLabel(container, text="No active cards.").pack(pady=50)
+        if not card_data:
+            return ctk.CTkLabel(container, text="No active cards.").pack(pady=50)
 
         c_id, c_num, c_exp, c_cvv, c_stat = card_data
         wrapper = ctk.CTkFrame(container, fg_color="transparent")
@@ -1568,8 +1620,10 @@ Nexus Security Team
         controls.pack(fill="x")
 
         def toggle_visibility():
-            if self.card_hidden: num_label.configure(text=c_num); cvv_label.configure(text=c_cvv); reveal_btn.configure(text="Hide Details")
-            else: num_label.configure(text=masked_num); cvv_label.configure(text="***"); reveal_btn.configure(text="Reveal Details")
+            if self.card_hidden:
+                num_label.configure(text=c_num); cvv_label.configure(text=c_cvv); reveal_btn.configure(text="Hide Details")
+            else:
+                num_label.configure(text=masked_num); cvv_label.configure(text="***"); reveal_btn.configure(text="Reveal Details")
             self.card_hidden = not self.card_hidden
 
         def toggle_freeze():
@@ -1583,7 +1637,8 @@ Nexus Security Team
         freeze_color = "#e74c3c" if c_stat == 'active' else "#2ecc71"
         ctk.CTkButton(controls, text="Freeze Card" if c_stat == 'active' else "Unfreeze Card", width=200, height=40, fg_color=freeze_color, command=toggle_freeze).pack(side="right", padx=10)
 
-        if c_stat == 'frozen': ctk.CTkLabel(wrapper, text="WARNING: Your card is frozen. Account withdrawals are blocked.", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).pack(pady=20)
+        if c_stat == 'frozen':
+            ctk.CTkLabel(wrapper, text="WARNING: Your card is frozen. Account withdrawals are blocked.", text_color="#e74c3c", font=ctk.CTkFont(weight="bold")).pack(pady=20)
 
     def view_wealth(self):
         container = self.set_content("Wealth & Fixed Deposits")
@@ -1755,7 +1810,8 @@ Nexus Security Team
         self.canvas.pack(fill="both", expand=True, padx=20, pady=20)
         self.after(100, self._render_chart)
 
-    def _trigger_render(self, event=None): self._render_chart()
+    def _trigger_render(self, event=None):
+        self._render_chart()
 
     def _render_chart(self):
         self.canvas.delete("all")
@@ -1801,7 +1857,9 @@ Nexus Security Team
         controls_frame.pack(fill="x", pady=(0, 10))
 
         self.current_history_acc = ctk.StringVar(value="Checking")
-        def reset_and_render(*args): self.history_offset = 0; self._render_ledger()
+        def reset_and_render(*args):
+            self.history_offset = 0
+            self._render_ledger()
 
         acc_selector = ctk.CTkSegmentedButton(controls_frame, values=list(self.active_accounts.keys()), variable=self.current_history_acc, command=reset_and_render)
         acc_selector.pack(side="left")
@@ -1858,7 +1916,8 @@ Nexus Security Team
         acc_type = self.current_history_acc.get()
         acc_id = self.active_accounts[acc_type]["id"]
         logs = self.backend.get_history(acc_id, limit=500, offset=0)
-        if not logs: return self.show_toast("There are no transactions to export.", "error")
+        if not logs:
+            return self.show_toast("There are no transactions to export.", "error")
 
         file_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")], title="Save Statement As", initialfile=f"Nexus_Statement_{acc_id}.pdf")
         if not file_path: return
@@ -1917,9 +1976,6 @@ Nexus Security Team
         theme_switch.pack(anchor="w", padx=20)
         theme_switch.set(ctk.get_appearance_mode())
 
-# ==========================================
-# Execution
-# ==========================================
 if __name__ == "__main__":
     db_backend = BankCore()
     app = EnterpriseBankUI(db_backend)

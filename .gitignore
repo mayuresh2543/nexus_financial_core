@@ -1,3 +1,21 @@
+# Secret Credentials & Keys
 credentials.json
+db_secret.key
+
+# Databases
 *.db
 *.sqlite3
+*.enc
+
+# App Exports
+*.pdf
+*.csv
+
+# Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS Generated Files
+.DS_Store
+Thumbs.db

@@ -14,6 +14,7 @@ from email.mime.multipart import MIMEMultipart
 import threading
 import json
 import os
+from cryptography.fernet import Fernet
 
 def load_credentials():
     """Loads system email credentials from a local JSON file."""
@@ -33,16 +34,57 @@ def load_credentials():
 
 SYSTEM_EMAIL, SYSTEM_APP_PASSWORD = load_credentials()
 
+DB_FILE = "nexus_core.db"
+ENC_DB_FILE = "nexus_core.enc"
+KEY_FILE = "db_secret.key"
+
+def get_or_create_db_key():
+    """Generates or retrieves the symmetric encryption key."""
+    if not os.path.exists(KEY_FILE):
+        key = Fernet.generate_key()
+        with open(KEY_FILE, "wb") as key_file:
+            key_file.write(key)
+    with open(KEY_FILE, "rb") as key_file:
+        return key_file.read()
+
+fernet = Fernet(get_or_create_db_key())
+
+def decrypt_database():
+    """Decrypts the database into memory before the app launches."""
+    if os.path.exists(ENC_DB_FILE) and not os.path.exists(DB_FILE):
+        print("Decrypting secure database...")
+        with open(ENC_DB_FILE, "rb") as enc_file:
+            encrypted_data = enc_file.read()
+        decrypted_data = fernet.decrypt(encrypted_data)
+        with open(DB_FILE, "wb") as db_file:
+            db_file.write(decrypted_data)
+        os.remove(ENC_DB_FILE)
+
+def encrypt_database():
+    """Encrypts the database and deletes the readable file upon closing."""
+    if os.path.exists(DB_FILE):
+        print("Securing and encrypting database...")
+        with open(DB_FILE, "rb") as db_file:
+            db_data = db_file.read()
+        encrypted_data = fernet.encrypt(db_data)
+        with open(ENC_DB_FILE, "wb") as enc_file:
+            enc_file.write(encrypted_data)
+        os.remove(DB_FILE)
+
 class BankCore:
     """
     Fintech Enterprise Engine.
     Handles all SQLite database interactions, authentication, and core banking logic.
     """
-    def __init__(self, db_name="enterprise_bank_v26.db"):
+    def __init__(self, db_name=DB_FILE):
         self.conn = sqlite3.connect(db_name)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.cursor = self.conn.cursor()
         self._initialize_schema()
+
+    def close_connection(self):
+        """Safely closes the SQLite connection."""
+        self.conn.close()
 
     def _initialize_schema(self):
         self.cursor.executescript('''
@@ -667,7 +709,6 @@ class BankCore:
             self.conn.rollback()
             return False, str(e)
 
-
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
@@ -688,6 +729,8 @@ class EnterpriseBankUI(ctk.CTk):
         self._timeout_id = None
         self.current_otp = None
 
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
         self.bind_all("<Any-KeyPress>", self.reset_timeout)
         self.bind_all("<Any-Motion>", self.reset_timeout)
         self.bind_all("<Any-Button>", self.reset_timeout)
@@ -696,6 +739,16 @@ class EnterpriseBankUI(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
 
         self.show_auth_screen()
+
+    def on_closing(self):
+        """Securely locks the database and shuts down the app."""
+        print("Initiating secure shutdown sequence...")
+        try:
+            self.backend.close_connection()
+            encrypt_database()
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
+        self.destroy()
 
     def show_toast(self, message, msg_type="info"):
         colors = {"success": "#2ecc71", "error": "#e74c3c", "info": "#3498db"}
@@ -2431,6 +2484,7 @@ Nexus Security Team
 
 
 if __name__ == "__main__":
+    decrypt_database()
     db_backend = BankCore()
     app = EnterpriseBankUI(db_backend)
     app.mainloop()

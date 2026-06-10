@@ -1073,7 +1073,6 @@ Nexus Security Team
         modal = ctk.CTkToplevel(self)
         modal.title("Authorize Transaction")
         modal.geometry("400x350")
-        modal.resizable(False, False)
         modal.attributes("-topmost", True)
         modal.grab_set()
 
@@ -1141,6 +1140,8 @@ Nexus Security Team
             modal, text="Authorize Transfer", command=verify_code,
             width=250, height=45, font=ctk.CTkFont(weight="bold")
         ).pack(pady=(20, 10))
+        
+        modal.bind('<Return>', lambda e: verify_code())
 
         ctk.CTkButton(
             modal, text="Cancel", command=modal.destroy, width=250,
@@ -1607,7 +1608,6 @@ Nexus Security Team
                 modal = ctk.CTkToplevel(self)
                 modal.title(f"{action.capitalize()} Vault")
                 modal.geometry("400x250")
-                modal.resizable(False, False)
                 modal.attributes("-topmost", True)
                 modal.grab_set()
 
@@ -1645,6 +1645,8 @@ Nexus Security Team
                     modal, text=f"Confirm {action.capitalize()}", height=40,
                     width=250, fg_color=btn_color, command=execute
                 ).pack(pady=10)
+                
+                modal.bind('<Return>', lambda e: execute())
 
             for v in vaults:
                 v_id, name, tgt, cur, stat = v
@@ -1811,7 +1813,6 @@ Nexus Security Team
             modal = ctk.CTkToplevel(self)
             modal.title("Address Book Manager")
             modal.geometry("450x350")
-            modal.resizable(False, False)
             modal.attributes("-topmost", True)
             modal.grab_set()
 
@@ -1849,6 +1850,7 @@ Nexus Security Team
                     save_btn.configure(state="disabled")
 
             ctk.CTkButton(modal, text="Verify Account", fg_color="transparent", border_width=1, command=verify).pack(pady=5)
+            acc_entry.bind('<Return>', lambda e: verify())
 
             nick_entry = ctk.CTkEntry(modal, placeholder_text="Assign Nickname (e.g. Landlord)", width=300, state="disabled")
             nick_entry.pack(pady=10)
@@ -1866,6 +1868,7 @@ Nexus Security Team
 
             save_btn = ctk.CTkButton(modal, text="Save Beneficiary", command=save_ben, state="disabled")
             save_btn.pack(pady=15)
+            nick_entry.bind('<Return>', lambda e: save_ben() if save_btn.cget('state') == 'normal' else None)
 
         manage_btn = ctk.CTkButton(target_header_frame, text="Manage Contacts", width=120, height=28, fg_color="transparent", border_width=1, command=open_beneficiary_manager)
 

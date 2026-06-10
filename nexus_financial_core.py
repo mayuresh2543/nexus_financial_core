@@ -866,6 +866,8 @@ class EnterpriseBankUI(ctk.CTk):
             card, text="Authenticate", command=login, width=300,
             height=40, font=ctk.CTkFont(weight="bold")
         ).pack(pady=(20, 10))
+        user_entry.bind('<Return>', lambda e: login())
+        pin_entry.bind('<Return>', lambda e: login())
 
         def handle_register_btn(*args):
             if self.auth_mode_var.get() == "Customer Access":
@@ -985,6 +987,7 @@ Nexus Security Team
             card, text="Verify Identity", command=verify_code, width=300,
             height=45, font=ctk.CTkFont(weight="bold")
         ).pack(pady=(20, 10))
+        otp_entry.bind('<Return>', lambda e: verify_code())
 
         def cancel_2fa():
             self.show_auth_screen()
@@ -1057,6 +1060,7 @@ Nexus Security Team
             card, text="Verify & Create Account", command=verify_code,
             width=300, height=45, font=ctk.CTkFont(weight="bold")
         ).pack(pady=(20, 10))
+        otp_entry.bind('<Return>', lambda e: verify_code())
 
         def cancel_reg_2fa():
             self.show_registration_screen()
@@ -1142,6 +1146,7 @@ Nexus Security Team
         ).pack(pady=(20, 10))
         
         modal.bind('<Return>', lambda e: verify_code())
+        otp_entry.bind('<Return>', lambda e: verify_code())
 
         ctk.CTkButton(
             modal, text="Cancel", command=modal.destroy, width=250,
@@ -1206,6 +1211,7 @@ Nexus Security Team
             card, text="Submit Application", command=process_registration,
             width=390, height=40, font=ctk.CTkFont(weight="bold")
         ).pack(pady=(30, 10))
+        confirm_pin_entry.bind('<Return>', lambda e: process_registration())
 
         ctk.CTkButton(
             card, text="Cancel", command=self.show_auth_screen, width=390,
@@ -1713,6 +1719,7 @@ Nexus Security Team
                 self.show_toast("Please enter a valid target amount.", "error")
 
         ctk.CTkButton(form, text="Create Vault", command=new_vault).pack(side="left")
+        tgt_entry.bind('<Return>', lambda e: new_vault())
 
     def view_transfers(self):
         container = self.set_content("Operations Hub")
@@ -1949,6 +1956,7 @@ Nexus Security Team
                 self.show_toast(str(e), "error")
 
         ctk.CTkButton(form_card, text="Authorize Transaction", command=execute_action, width=400, height=45).pack(pady=(10, 20))
+        amt_entry.bind('<Return>', lambda e: execute_action())
 
     def view_cards(self):
         container = self.set_content("Virtual Card Management")

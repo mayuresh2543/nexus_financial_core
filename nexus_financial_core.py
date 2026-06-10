@@ -720,7 +720,7 @@ class EnterpriseBankUI(ctk.CTk):
     def __init__(self, backend):
         super().__init__()
         self.backend = backend
-        self.title("Nexus Financial Core - Enterprise")
+        self.title("Nexus Financial Core")
         self.geometry("1250x850")
         self.minsize(1150, 750)
 
@@ -1506,12 +1506,26 @@ Nexus Security Team
             ("Preferences", self.view_settings)
         ]
 
+        self.nav_buttons = {}
+
+        def create_nav_cmd(txt, cmd):
+            def wrapper():
+                for btn_txt, btn in self.nav_buttons.items():
+                    if btn_txt == txt:
+                        btn.configure(fg_color=("gray75", "gray25"))
+                    else:
+                        btn.configure(fg_color="transparent")
+                cmd()
+            return wrapper
+
         for i, (text, command) in enumerate(nav_btns):
-            ctk.CTkButton(
-                self.sidebar, text=text, command=command, fg_color="transparent",
+            btn = ctk.CTkButton(
+                self.sidebar, text=text, command=create_nav_cmd(text, command), fg_color="transparent",
                 text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"),
                 anchor="w", font=ctk.CTkFont(size=14)
-            ).grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
+            )
+            btn.grid(row=i+1, column=0, padx=15, pady=5, sticky="ew")
+            self.nav_buttons[text] = btn
 
         def manual_logout():
             self.active_user_data = {}
@@ -1529,6 +1543,8 @@ Nexus Security Team
         self.content_area.grid_rowconfigure(1, weight=1)
 
         self.history_offset = 0
+        if hasattr(self, "nav_buttons") and "Dashboard" in self.nav_buttons:
+            self.nav_buttons["Dashboard"].configure(fg_color=("gray75", "gray25"))
         self.view_dashboard()
 
     def set_content(self, title):
@@ -2254,63 +2270,68 @@ Nexus Security Team
         self.canvas = ctk.CTkCanvas(self.canvas_frame, bg=bg_color, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, padx=20, pady=20)
 
+        self.canvas.bind("<Configure>", self._trigger_render)
         self.after(100, self._render_chart)
 
     def _trigger_render(self, event=None):
         self._render_chart()
 
     def _render_chart(self):
-        self.canvas.delete("all")
-        acc_id = self.active_accounts[self.analytics_acc_var.get()]["id"]
-        spending_data = self.backend.get_spending_by_category(acc_id)
+        try:
+            self.canvas.delete("all")
+            acc_id = self.active_accounts[self.analytics_acc_var.get()]["id"]
+            spending_data = self.backend.get_spending_by_category(acc_id)
 
-        c_width, c_height = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if c_width < 50 or c_height < 50:
-            return
+            c_width, c_height = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if c_width < 50 or c_height < 50:
+                return
 
-        if not spending_data:
-            self.canvas.create_text(c_width/2, c_height/2, text="No outgoing spending data to analyze.", fill="gray", font=("Arial", 14))
-            return
+            if not spending_data:
+                self.canvas.create_text(c_width/2, c_height/2, text="No outgoing spending data to analyze.", fill="gray", font=("Arial", 14))
+                return
 
-        total_spent = sum(amt for cat, amt in spending_data)
-        colors = ["#e74c3c", "#3498db", "#f1c40f", "#9b59b6", "#2ecc71", "#e67e22", "#1abc9c"]
-        start_angle = 90
-        cx, cy = c_width / 2, c_height / 2
-        radius = min(cx, cy) * 0.7
+            total_spent = sum(amt for cat, amt in spending_data)
+            colors = ["#e74c3c", "#3498db", "#f1c40f", "#9b59b6", "#2ecc71", "#e67e22", "#1abc9c"]
+            start_angle = 90
+            cx, cy = c_width / 2, c_height / 2
+            radius = min(cx, cy) * 0.7
 
-        legend_x = 20
-        legend_y = 20
+            legend_x = 20
+            legend_y = 20
 
-        for i, (cat, amt) in enumerate(spending_data):
-            extent = (amt / total_spent) * 360
-            color = colors[i % len(colors)]
-            self.canvas.create_arc(
-                cx - radius, cy - radius, cx + radius, cy + radius,
-                start=start_angle, extent=extent, fill=color, outline=color, width=2
+            for i, (cat, amt) in enumerate(spending_data):
+                extent = (amt / total_spent) * 360
+                extent = min(359.999, max(0.1, extent))  # Prevent 360 bug on Windows
+                color = colors[i % len(colors)]
+                self.canvas.create_arc(
+                    cx - radius, cy - radius, cx + radius, cy + radius,
+                    start=start_angle, extent=extent, fill=color, outline=color, width=2
+                )
+                start_angle += extent
+
+                self.canvas.create_rectangle(legend_x, legend_y, legend_x+15, legend_y+15, fill=color, outline=color)
+                pct = (amt / total_spent) * 100
+                self.canvas.create_text(
+                    legend_x+25, legend_y+7, text=f"{cat}: {pct:.1f}% (₹{amt:,.0f})",
+                    fill="gray", anchor="w", font=("Arial", 11, "bold")
+                )
+                legend_y += 30
+
+            bg_color = "#1e1e1e" if ctk.get_appearance_mode() == "Dark" else "#dce4ee"
+            inner_radius = radius * 0.6
+
+            self.canvas.create_oval(
+                cx - inner_radius, cy - inner_radius, cx + inner_radius, cy + inner_radius,
+                fill=bg_color, outline=bg_color
             )
-            start_angle += extent
-
-            self.canvas.create_rectangle(legend_x, legend_y, legend_x+15, legend_y+15, fill=color, outline=color)
-            pct = (amt / total_spent) * 100
+            self.canvas.create_text(cx, cy - 10, text="Total Spent", fill="gray", font=("Arial", 12))
             self.canvas.create_text(
-                legend_x+25, legend_y+7, text=f"{cat}: {pct:.1f}% (₹{amt:,.0f})",
-                fill="gray", anchor="w", font=("Arial", 11, "bold")
+                cx, cy + 15, text=f"₹{total_spent:,.0f}",
+                fill="white" if ctk.get_appearance_mode() == "Dark" else "black",
+                font=("Arial", 18, "bold")
             )
-            legend_y += 30
-
-        bg_color = "#1e1e1e" if ctk.get_appearance_mode() == "Dark" else "#dce4ee"
-        inner_radius = radius * 0.6
-
-        self.canvas.create_oval(
-            cx - inner_radius, cy - inner_radius, cx + inner_radius, cy + inner_radius,
-            fill=bg_color, outline=bg_color
-        )
-        self.canvas.create_text(cx, cy - 10, text="Total Spent", fill="gray", font=("Arial", 12))
-        self.canvas.create_text(
-            cx, cy + 15, text=f"₹{total_spent:,.0f}",
-            fill="white" if ctk.get_appearance_mode() == "Dark" else "black",
-            font=("Arial", 18, "bold")
-        )
+        except Exception as e:
+            print(f"Error rendering chart: {e}")
 
     def view_history(self):
         container = self.set_content("Account Statements")

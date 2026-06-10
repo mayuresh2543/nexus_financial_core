@@ -1077,7 +1077,6 @@ Nexus Security Team
         modal = ctk.CTkToplevel(self)
         modal.title("Authorize Transaction")
         modal.geometry("400x350")
-        modal.attributes("-topmost", True)
         modal.grab_set()
 
         ctk.CTkLabel(modal, text="Verifying Identity...", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(30, 10))
@@ -1614,7 +1613,6 @@ Nexus Security Team
                 modal = ctk.CTkToplevel(self)
                 modal.title(f"{action.capitalize()} Vault")
                 modal.geometry("400x250")
-                modal.attributes("-topmost", True)
                 modal.grab_set()
 
                 ctk.CTkLabel(modal, text=f"{action.capitalize()} Funds", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 5))
@@ -1820,7 +1818,6 @@ Nexus Security Team
             modal = ctk.CTkToplevel(self)
             modal.title("Address Book Manager")
             modal.geometry("450x350")
-            modal.attributes("-topmost", True)
             modal.grab_set()
 
             ctk.CTkLabel(modal, text="Add Trusted Beneficiary", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(20, 10))
